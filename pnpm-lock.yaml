@@ -23,6 +23,12 @@ importers:
       '@neuralmap/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@neuralmap/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@neuralmap/ingest':
+        specifier: workspace:*
+        version: link:../../packages/ingest
       '@neuralmap/schema':
         specifier: workspace:*
         version: link:../../packages/schema

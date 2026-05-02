@@ -10,7 +10,6 @@ import {
   text,
   timestamp,
   uniqueIndex,
-  uuid,
   vector
 } from "drizzle-orm/pg-core";
 
@@ -22,7 +21,7 @@ export const runStatusEnum = pgEnum("run_status", runStatuses);
 export const graphNodes = pgTable(
   "graph_nodes",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: text("id").primaryKey(),
     type: nodeTypeEnum("type").notNull(),
     title: text("title").notNull(),
     contentRef: text("content_ref"),
@@ -47,12 +46,12 @@ export const graphNodes = pgTable(
 export const traceRuns = pgTable(
   "trace_runs",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: text("id").primaryKey(),
     agentId: text("agent_id").notNull(),
     sessionId: text("session_id").notNull(),
     objective: text("objective").notNull(),
     status: runStatusEnum("status").notNull().default("planned"),
-    contextPackId: uuid("context_pack_id"),
+    contextPackId: text("context_pack_id"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -70,17 +69,17 @@ export const traceRuns = pgTable(
 export const graphEdges = pgTable(
   "graph_edges",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
-    fromNodeId: uuid("from_node_id")
+    id: text("id").primaryKey(),
+    fromNodeId: text("from_node_id")
       .notNull()
       .references(() => graphNodes.id, { onDelete: "cascade" }),
-    toNodeId: uuid("to_node_id")
+    toNodeId: text("to_node_id")
       .notNull()
       .references(() => graphNodes.id, { onDelete: "cascade" }),
     type: edgeTypeEnum("type").notNull(),
     weight: real("weight").notNull().default(1),
     confidence: real("confidence").notNull().default(0.5),
-    sourceRunId: uuid("source_run_id").references(() => traceRuns.id, { onDelete: "set null" }),
+    sourceRunId: text("source_run_id").references(() => traceRuns.id, { onDelete: "set null" }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
@@ -96,8 +95,8 @@ export const graphEdges = pgTable(
 export const contentChunks = pgTable(
   "content_chunks",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
-    nodeId: uuid("node_id")
+    id: text("id").primaryKey(),
+    nodeId: text("node_id")
       .notNull()
       .references(() => graphNodes.id, { onDelete: "cascade" }),
     sourceUri: text("source_uri").notNull(),
@@ -118,7 +117,7 @@ export const contentChunks = pgTable(
 export const contextPacks = pgTable(
   "context_packs",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    id: text("id").primaryKey(),
     objective: text("objective").notNull(),
     agentId: text("agent_id").notNull(),
     sessionId: text("session_id").notNull(),
@@ -144,8 +143,8 @@ export const contextPacks = pgTable(
 export const handoffPacks = pgTable(
   "handoff_packs",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
-    fromRunId: uuid("from_run_id")
+    id: text("id").primaryKey(),
+    fromRunId: text("from_run_id")
       .notNull()
       .references(() => traceRuns.id, { onDelete: "cascade" }),
     toSessionId: text("to_session_id"),
@@ -169,11 +168,11 @@ export const handoffPacks = pgTable(
 export const traceSpans = pgTable(
   "trace_spans",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
-    runId: uuid("run_id")
+    id: text("id").primaryKey(),
+    runId: text("run_id")
       .notNull()
       .references(() => traceRuns.id, { onDelete: "cascade" }),
-    parentSpanId: uuid("parent_span_id"),
+    parentSpanId: text("parent_span_id"),
     name: text("name").notNull(),
     kind: text("kind").notNull(),
     attributes: jsonb("attributes").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
@@ -240,4 +239,3 @@ export const traceSpansRelations = relations(traceSpans, ({ one }) => ({
     references: [traceRuns.id]
   })
 }));
-

@@ -21,21 +21,21 @@ export interface SourceDocument {
   title: string;
   uri: string;
   body: string;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 export interface RepositoryFile {
   path: string;
   content: string;
-  language?: string;
-  metadata?: Record<string, unknown>;
+  language?: string | undefined;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 export interface RepositorySnapshot {
   id: string;
   root: string;
   files: RepositoryFile[];
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 export interface TicketSnapshot {
@@ -44,8 +44,7 @@ export interface TicketSnapshot {
   url: string;
   body: string;
   status: string;
-  labels?: string[];
-  comments?: string[];
-  metadata?: Record<string, unknown>;
+  labels?: string[] | undefined;
+  comments?: string[] | undefined;
+  metadata?: Record<string, unknown> | undefined;
 }
-

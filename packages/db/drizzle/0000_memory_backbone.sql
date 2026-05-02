@@ -71,7 +71,7 @@ EXCEPTION
 END $$;
 
 CREATE TABLE IF NOT EXISTS graph_nodes (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id text PRIMARY KEY,
   type node_type NOT NULL,
   title text NOT NULL,
   content_ref text,
@@ -87,12 +87,12 @@ CREATE TABLE IF NOT EXISTS graph_nodes (
 );
 
 CREATE TABLE IF NOT EXISTS trace_runs (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id text PRIMARY KEY,
   agent_id text NOT NULL,
   session_id text NOT NULL,
   objective text NOT NULL,
   status run_status NOT NULL DEFAULT 'planned',
-  context_pack_id uuid,
+  context_pack_id text,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   started_at timestamptz,
   completed_at timestamptz,
@@ -101,21 +101,21 @@ CREATE TABLE IF NOT EXISTS trace_runs (
 );
 
 CREATE TABLE IF NOT EXISTS graph_edges (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  from_node_id uuid NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,
-  to_node_id uuid NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,
+  id text PRIMARY KEY,
+  from_node_id text NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,
+  to_node_id text NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,
   type edge_type NOT NULL,
   weight real NOT NULL DEFAULT 1 CHECK (weight >= 0),
   confidence real NOT NULL DEFAULT 0.5 CHECK (confidence >= 0 AND confidence <= 1),
-  source_run_id uuid REFERENCES trace_runs(id) ON DELETE SET NULL,
+  source_run_id text REFERENCES trace_runs(id) ON DELETE SET NULL,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT graph_edges_unique_directed UNIQUE (from_node_id, to_node_id, type)
 );
 
 CREATE TABLE IF NOT EXISTS content_chunks (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  node_id uuid NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,
+  id text PRIMARY KEY,
+  node_id text NOT NULL REFERENCES graph_nodes(id) ON DELETE CASCADE,
   source_uri text NOT NULL,
   ordinal integer NOT NULL,
   content text NOT NULL,
@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS content_chunks (
 );
 
 CREATE TABLE IF NOT EXISTS context_packs (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  id text PRIMARY KEY,
   objective text NOT NULL,
   agent_id text NOT NULL,
   session_id text NOT NULL,
@@ -148,8 +148,8 @@ ALTER TABLE trace_runs
   ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS handoff_packs (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  from_run_id uuid NOT NULL REFERENCES trace_runs(id) ON DELETE CASCADE,
+  id text PRIMARY KEY,
+  from_run_id text NOT NULL REFERENCES trace_runs(id) ON DELETE CASCADE,
   to_session_id text,
   objective text NOT NULL,
   current_status text NOT NULL,
@@ -164,9 +164,9 @@ CREATE TABLE IF NOT EXISTS handoff_packs (
 );
 
 CREATE TABLE IF NOT EXISTS trace_spans (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  run_id uuid NOT NULL REFERENCES trace_runs(id) ON DELETE CASCADE,
-  parent_span_id uuid,
+  id text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES trace_runs(id) ON DELETE CASCADE,
+  parent_span_id text,
   name text NOT NULL,
   kind text NOT NULL,
   attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -203,4 +203,3 @@ CREATE INDEX IF NOT EXISTS trace_spans_run_idx ON trace_spans(run_id);
 CREATE INDEX IF NOT EXISTS trace_spans_parent_idx ON trace_spans(parent_span_id);
 CREATE INDEX IF NOT EXISTS trace_spans_kind_idx ON trace_spans(kind);
 CREATE INDEX IF NOT EXISTS trace_spans_started_at_idx ON trace_spans(started_at);
-

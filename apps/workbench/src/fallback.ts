@@ -4,6 +4,7 @@ const generatedAt = "2026-05-02T00:00:00.000Z";
 
 export const fallbackGraph: WorkbenchGraph = {
   generated_at: generatedAt,
+  mode: "sample",
   nodes: [
     {
       id: "node_repository_neuralmap",
@@ -84,4 +85,3 @@ export const fallbackTrace: RunTrace = {
     }
   ]
 };
-

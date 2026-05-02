@@ -14,10 +14,10 @@ export interface WorkbenchGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
   generated_at: string;
+  mode?: "database" | "sample";
 }
 
 export interface RunTrace {
   run_id: string;
   spans: TraceSpan[];
 }
-

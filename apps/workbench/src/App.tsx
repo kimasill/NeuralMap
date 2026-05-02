@@ -76,6 +76,9 @@ export function App() {
               aria-label="Search nodes"
             />
           </div>
+          <span className={`data-mode ${graph?.mode === "database" ? "live" : "sample"}`}>
+            {graph?.mode === "database" ? "Database" : "Sample"}
+          </span>
           <button className="icon-button" type="button" onClick={() => void loadWorkbench()} aria-label="Refresh graph">
             <RefreshCw size={17} />
           </button>
@@ -193,4 +196,3 @@ function TraceRow({ span }: { span: TraceSpan }) {
     </article>
   );
 }
-

@@ -30,6 +30,10 @@ Initial slice:
 
 - `packages/core` provides lexical seed ranking, 1-hop graph expansion, Context Pack composition, Handoff Pack creation, and sample graph memory.
 
+Persistence slice:
+
+- API context composition now saves packs through the graph data source when Postgres is configured.
+
 ### Track B: Repository, document, and ticket ingest
 
 Linear: [AIN-7](https://linear.app/aineuralmap/issue/AIN-7/track-b-repository-document-and-ticket-ingest)
@@ -39,6 +43,10 @@ Implement ingest interfaces for repository, document, and ticket sources, includ
 Initial slice:
 
 - `packages/ingest` provides document, repository, and ticket ingestion helpers with chunk drafts and import dependency edge emission.
+
+Persistence slice:
+
+- API endpoints accept document, repository, and ticket snapshots and persist emitted nodes, edges, and chunks through the DB graph store.
 
 ### Track C: Fastify API and trace middleware
 
@@ -50,6 +58,10 @@ Initial slice:
 
 - `apps/api` exposes health, agent, graph, context, handoff, cache, and workbench endpoints backed by sample graph memory.
 
+Persistence slice:
+
+- API now uses a DB-backed graph data source with sample fallback and exposes ingest endpoints.
+
 ### Track D: Graph workbench UI
 
 Linear: [AIN-9](https://linear.app/aineuralmap/issue/AIN-9/track-d-graph-workbench-ui)
@@ -59,3 +71,7 @@ Implement the React + Cytoscape workbench with agent panel, graph canvas, contex
 Initial slice:
 
 - `apps/workbench` renders the agent panel, Cytoscape graph canvas, context inspector, and trace panel with API-backed data and local fallbacks.
+
+Persistence slice:
+
+- Workbench shows a source badge so users can tell whether the graph is coming from `Database` or `Sample` data.

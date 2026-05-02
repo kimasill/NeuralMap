@@ -185,6 +185,30 @@ dd {
   cursor: pointer;
 }
 
+.data-mode {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  border: 1px solid #34445d;
+  border-radius: 8px;
+  padding: 0 11px;
+  background: #111827;
+  color: #d9e6f2;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.data-mode.live {
+  border-color: #22c55e;
+  color: #86efac;
+}
+
+.data-mode.sample {
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
 .icon-button:hover,
 .search-results button:hover {
   border-color: #22c55e;
@@ -307,4 +331,3 @@ dd {
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   }
 }
-

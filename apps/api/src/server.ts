@@ -4,9 +4,9 @@ import {
   createHandoffPack,
   expandGraphNeighborhood,
   rankSeedNodes,
-  sampleMemory,
   sampleTraceSpans
 } from "@neuralmap/core";
+import { ingestDocument, ingestRepository, ingestTicket } from "@neuralmap/ingest";
 import {
   composeContextRequestSchema,
   graphQueryRequestSchema,
@@ -16,6 +16,7 @@ import {
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 
+import { createGraphDataSource } from "./data-source.js";
 import { registerTraceHooks } from "./trace.js";
 
 const handoffRequestSchema = z.object({
@@ -44,10 +45,7 @@ export function createApp(): FastifyInstance {
     }
   });
 
-  const memory = {
-    nodes: [...sampleMemory.nodes],
-    edges: [...sampleMemory.edges]
-  };
+  const dataSource = createGraphDataSource();
 
   void app.register(cors, {
     origin: true
@@ -58,6 +56,7 @@ export function createApp(): FastifyInstance {
   app.get("/health", async () => ({
     ok: true,
     service: "neuralmap-api",
+    graph_mode: dataSource.mode,
     time: new Date().toISOString()
   }));
 
@@ -75,11 +74,7 @@ export function createApp(): FastifyInstance {
     ]
   }));
 
-  app.get("/workbench/graph/subgraph", async () => ({
-    nodes: memory.nodes,
-    edges: memory.edges,
-    generated_at: new Date().toISOString()
-  }));
+  app.get("/workbench/graph/subgraph", async () => dataSource.getMemory());
 
   app.get("/workbench/runs/:id/trace", async (request) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
@@ -91,7 +86,7 @@ export function createApp(): FastifyInstance {
 
   app.get("/graph/nodes/:id", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const node = memory.nodes.find((candidate) => candidate.id === params.id);
+    const node = await dataSource.getNode(params.id);
 
     if (!node) {
       return reply.status(404).send({ error: "node_not_found" });
@@ -102,6 +97,7 @@ export function createApp(): FastifyInstance {
 
   app.get("/graph/nodes/:id/neighbors", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const memory = await dataSource.getMemory();
     const node = memory.nodes.find((candidate) => candidate.id === params.id);
 
     if (!node) {
@@ -113,6 +109,7 @@ export function createApp(): FastifyInstance {
 
   app.post("/graph/query", async (request) => {
     const body = graphQueryRequestSchema.parse(request.body);
+    const memory = await dataSource.getMemory();
     const seeds = rankSeedNodes(body, memory.nodes);
     const neighborhood = expandGraphNeighborhood(
       seeds.map((seed) => seed.node.id),
@@ -138,22 +135,31 @@ export function createApp(): FastifyInstance {
       created_at: new Date().toISOString(),
       metadata: { source: "api" }
     };
-    memory.edges.push(edge);
-    return edge;
+    const persisted = await dataSource.persistIngest({
+      nodes: [],
+      edges: [edge],
+      chunks: []
+    });
+    return {
+      edge,
+      persistence: persisted
+    };
   });
 
   app.post("/context/compose", async (request) => {
     const body = composeContextRequestSchema.parse(request.body);
-    return composeContextPack(body, memory);
+    const memory = await dataSource.getMemory();
+    const pack = composeContextPack(body, memory);
+    return dataSource.saveContextPack(pack);
   });
 
   app.get("/context/packs/:id", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    return reply.status(501).send({
-      error: "not_persisted_yet",
-      id: params.id,
-      detail: "Context pack persistence lands with the database-backed API slice."
-    });
+    const pack = await dataSource.getContextPack(params.id);
+    if (!pack) {
+      return reply.status(404).send({ error: "context_pack_not_found", id: params.id });
+    }
+    return pack;
   });
 
   app.post("/context/handoff", async (request) => {
@@ -168,7 +174,7 @@ export function createApp(): FastifyInstance {
       recommendedNextActions: body.recommended_next_actions
     };
 
-    return createHandoffPack(
+    const pack = createHandoffPack(
       body.to_session_id
         ? {
             ...input,
@@ -176,6 +182,25 @@ export function createApp(): FastifyInstance {
           }
         : input
     );
+    return dataSource.saveHandoffPack(pack);
+  });
+
+  app.post("/ingest/document", async (request) => {
+    const body = sourceDocumentSchema.parse(request.body);
+    const emission = ingestDocument(body);
+    return dataSource.persistIngest(emission);
+  });
+
+  app.post("/ingest/repository", async (request) => {
+    const body = repositorySnapshotSchema.parse(request.body);
+    const emission = ingestRepository(body);
+    return dataSource.persistIngest(emission);
+  });
+
+  app.post("/ingest/ticket", async (request) => {
+    const body = ticketSnapshotSchema.parse(request.body);
+    const emission = ingestTicket(body);
+    return dataSource.persistIngest(emission);
   });
 
   app.get("/cache/stats", async () => ({
@@ -189,7 +214,7 @@ export function createApp(): FastifyInstance {
 
   app.post("/cache/invalidate", async () => ({
     invalidated: true,
-    scope: "sample-memory"
+    scope: dataSource.mode
   }));
 
   app.get("/cache/key/:id", async (request) => {
@@ -233,8 +258,41 @@ export function createApp(): FastifyInstance {
   });
 
   app.get("/agents/:id/runs/:runId/references", async () => ({
-    nodes: memory.nodes.filter((node: GraphNode) => node.importance_score >= 0.85)
+    nodes: (await dataSource.getMemory()).nodes.filter((node: GraphNode) => node.importance_score >= 0.85)
   }));
 
   return app;
 }
+
+const sourceDocumentSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  uri: z.string().min(1),
+  body: z.string().min(1),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const repositoryFileSchema = z.object({
+  path: z.string().min(1),
+  content: z.string(),
+  language: z.string().min(1).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const repositorySnapshotSchema = z.object({
+  id: z.string().min(1),
+  root: z.string().min(1),
+  files: z.array(repositoryFileSchema),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const ticketSnapshotSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  url: z.string().min(1),
+  body: z.string().min(1),
+  status: z.string().min(1),
+  labels: z.array(z.string()).optional(),
+  comments: z.array(z.string()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});

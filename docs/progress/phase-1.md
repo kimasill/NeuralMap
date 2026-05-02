@@ -57,6 +57,20 @@ Completed on 2026-05-02:
 - `apps/api`: Fastify health, agent, graph, context, cache, and workbench endpoints with trace hook logging.
 - `apps/workbench`: React + Cytoscape workbench with agent panel, graph canvas, inspector, and run trace.
 
+Completed in the next persistence slice:
+
+- `packages/db`: graph store repository for graph nodes, edges, chunks, Context Packs, and Handoff Packs.
+- `packages/db`: initial migration corrected to use stable text IDs that match shared schema and ingest emissions.
+- `apps/api`: DB-backed graph data source with sample fallback when `DATABASE_URL` is not configured or DB data is empty.
+- `apps/api`: ingest endpoints for document, repository, and ticket snapshots.
+- `apps/workbench`: graph source badge shows whether the current view is `Database` or `Sample`.
+
+Current Workbench data note:
+
+- `Sample` means the graph is in-memory bootstrap/fallback data.
+- `Database` means graph nodes and edges are being loaded from Postgres via the API.
+- As of this slice, local dev is still showing `Sample` unless Postgres is configured and ingest data is persisted.
+
 Local dev URLs:
 
 - API: `http://localhost:4317`
@@ -68,3 +82,5 @@ Verification:
 - `pnpm build`
 - API `GET /health`
 - Workbench `GET /`
+- API `POST /ingest/ticket`
+- API `POST /context/compose`
