@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.turbo/
+.vite/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+coverage/
+pnpm-debug.log*
+drizzle/meta/_journal.json
+.cursor/
+*.code-workspace

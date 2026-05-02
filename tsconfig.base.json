@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "paths": {
+      "@neuralmap/schema": ["packages/schema/src/index.ts"],
+      "@neuralmap/schema/*": ["packages/schema/src/*"],
+      "@neuralmap/db": ["packages/db/src/index.ts"],
+      "@neuralmap/db/*": ["packages/db/src/*"]
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(C:\\Users\\김성현\\.claude\\skills\\**)",
+      "Read(S:\\Project\\PaperClip\\skills\\**)",
+      "Bash(npx:*)",
+      "Bash(npx skills *)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\김성현\\.claude\\skills",
+      "S:\\Project\\PaperClip\\skills"
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+
