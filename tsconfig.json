@@ -2,7 +2,10 @@
   "files": [],
   "references": [
     { "path": "packages/schema" },
-    { "path": "packages/db" }
+    { "path": "packages/db" },
+    { "path": "packages/core" },
+    { "path": "packages/ingest" },
+    { "path": "apps/api" },
+    { "path": "apps/workbench" }
   ]
 }
-

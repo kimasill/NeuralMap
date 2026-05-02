@@ -1,11 +1,17 @@
 node_modules/
 dist/
+dist-types/
 .turbo/
 .vite/
+.logs/
 .env
 .env.*
 !.env.example
 *.tsbuildinfo
+apps/*/vite.config.js
+apps/*/vite.config.js.map
+apps/*/vite.config.d.ts
+apps/*/vite.config.d.ts.map
 coverage/
 pnpm-debug.log*
 drizzle/meta/_journal.json

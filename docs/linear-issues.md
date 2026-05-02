@@ -7,10 +7,10 @@ Workspace: https://linear.app/aineuralmap
 | Track | Linear | Status |
 | --- | --- | --- |
 | Step 0: Bootstrap memory backbone contracts | [AIN-5](https://linear.app/aineuralmap/issue/AIN-5/step-0-bootstrap-memory-backbone-contracts) | Done |
-| Track A: Core retrieval and context composer | [AIN-6](https://linear.app/aineuralmap/issue/AIN-6/track-a-core-retrieval-and-context-composer) | Planned |
-| Track B: Repository, document, and ticket ingest | [AIN-7](https://linear.app/aineuralmap/issue/AIN-7/track-b-repository-document-and-ticket-ingest) | Planned |
-| Track C: Fastify API and trace middleware | [AIN-8](https://linear.app/aineuralmap/issue/AIN-8/track-c-fastify-api-and-trace-middleware) | Planned |
-| Track D: Graph workbench UI | [AIN-9](https://linear.app/aineuralmap/issue/AIN-9/track-d-graph-workbench-ui) | Planned |
+| Track A: Core retrieval and context composer | [AIN-6](https://linear.app/aineuralmap/issue/AIN-6/track-a-core-retrieval-and-context-composer) | In Progress |
+| Track B: Repository, document, and ticket ingest | [AIN-7](https://linear.app/aineuralmap/issue/AIN-7/track-b-repository-document-and-ticket-ingest) | In Progress |
+| Track C: Fastify API and trace middleware | [AIN-8](https://linear.app/aineuralmap/issue/AIN-8/track-c-fastify-api-and-trace-middleware) | In Progress |
+| Track D: Graph workbench UI | [AIN-9](https://linear.app/aineuralmap/issue/AIN-9/track-d-graph-workbench-ui) | In Progress |
 
 ## Issue Drafts
 
@@ -26,11 +26,19 @@ Linear: [AIN-6](https://linear.app/aineuralmap/issue/AIN-6/track-a-core-retrieva
 
 Implement seed retrieval contracts, graph expansion rules, compression policy, and Context Pack Composer using `packages/schema` and `packages/db`.
 
+Initial slice:
+
+- `packages/core` provides lexical seed ranking, 1-hop graph expansion, Context Pack composition, Handoff Pack creation, and sample graph memory.
+
 ### Track B: Repository, document, and ticket ingest
 
 Linear: [AIN-7](https://linear.app/aineuralmap/issue/AIN-7/track-b-repository-document-and-ticket-ingest)
 
 Implement ingest interfaces for repository, document, and ticket sources, including chunking and graph node or edge emission.
+
+Initial slice:
+
+- `packages/ingest` provides document, repository, and ticket ingestion helpers with chunk drafts and import dependency edge emission.
 
 ### Track C: Fastify API and trace middleware
 
@@ -38,8 +46,16 @@ Linear: [AIN-8](https://linear.app/aineuralmap/issue/AIN-8/track-c-fastify-api-a
 
 Implement the initial Agent, Context, Graph, Cache, and Workbench API surfaces with trace span capture.
 
+Initial slice:
+
+- `apps/api` exposes health, agent, graph, context, handoff, cache, and workbench endpoints backed by sample graph memory.
+
 ### Track D: Graph workbench UI
 
 Linear: [AIN-9](https://linear.app/aineuralmap/issue/AIN-9/track-d-graph-workbench-ui)
 
 Implement the React + Cytoscape workbench with agent panel, graph canvas, context inspector, and run trace foundation.
+
+Initial slice:
+
+- `apps/workbench` renders the agent panel, Cytoscape graph canvas, context inspector, and trace panel with API-backed data and local fallbacks.
