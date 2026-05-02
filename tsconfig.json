@@ -2,6 +2,8 @@
   "files": [],
   "references": [
     { "path": "packages/schema" },
+    { "path": "packages/cache" },
+    { "path": "packages/trace" },
     { "path": "packages/db" },
     { "path": "packages/core" },
     { "path": "packages/ingest" },

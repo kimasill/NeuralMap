@@ -80,5 +80,77 @@ describe("api server", () => {
       await app.close();
     }
   });
-});
 
+  it("caches graph query responses and reports cache stats", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      const payload = {
+        query: "Context Pack",
+        top_k: 3,
+        expand_hops: 1,
+        min_edge_confidence: 0.4
+      };
+
+      const first = await app.inject({
+        method: "POST",
+        url: "/graph/query",
+        payload
+      });
+      const second = await app.inject({
+        method: "POST",
+        url: "/graph/query",
+        payload
+      });
+      const stats = await app.inject({
+        method: "GET",
+        url: "/cache/stats"
+      });
+
+      expect(first.json().cache.hit).toBe(false);
+      expect(second.json().cache.hit).toBe(true);
+      expect(stats.json().layers).toContainEqual(
+        expect.objectContaining({
+          name: "retrieval",
+          hits: 1,
+          misses: 1,
+          writes: 1
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("records HTTP request spans for workbench trace inspection", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      await app.inject({
+        method: "GET",
+        url: "/health",
+        headers: {
+          "x-neuralmap-run-id": "http-test"
+        }
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/workbench/runs/http-test/trace"
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().spans).toContainEqual(
+        expect.objectContaining({
+          run_id: "http-test",
+          kind: "user_request",
+          name: "GET /health"
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+});

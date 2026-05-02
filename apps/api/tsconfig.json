@@ -8,9 +8,11 @@
   },
   "references": [
     { "path": "../../packages/schema" },
+    { "path": "../../packages/cache" },
     { "path": "../../packages/core" },
     { "path": "../../packages/db" },
-    { "path": "../../packages/ingest" }
+    { "path": "../../packages/ingest" },
+    { "path": "../../packages/trace" }
   ],
   "include": ["src/**/*.ts"]
 }

@@ -38,6 +38,10 @@ Local DB ingest slice:
 
 - `db:seed:repo` can now persist repository-derived graph nodes into Postgres, which gives the composer live graph memory once DB mode is active.
 
+Cache and trace slice:
+
+- Repeated graph queries are now cached through `packages/cache`, giving the composer/API path measurable hit and miss behavior.
+
 ### Track B: Repository, document, and ticket ingest
 
 Linear: [AIN-7](https://linear.app/aineuralmap/issue/AIN-7/track-b-repository-document-and-ticket-ingest)
@@ -54,7 +58,7 @@ Persistence slice:
 
 Local DB ingest slice:
 
-- `packages/ingest` now includes a filesystem scanner and CLI for ingesting the current repository. Latest dry-run result on this repo: 90 files, 91 nodes, 91 edges, 166 chunks.
+- `packages/ingest` now includes a filesystem scanner and CLI for ingesting the current repository. Latest dry-run result on this repo: 104 files, 105 nodes, 105 edges, 185 chunks.
 
 ### Track C: Fastify API and trace middleware
 
@@ -74,6 +78,10 @@ Local DB ingest slice:
 
 - Root scripts and local infrastructure config now cover Postgres/pgvector, Redis, migrations, and repository seeding. This machine lacks Docker/Postgres, so API remains in `sample` mode locally until services are available.
 
+Cache and trace slice:
+
+- `packages/cache` and `packages/trace` now back the API cache stats and request trace hooks. Repeated `POST /graph/query` calls show first miss, second hit, and `/workbench/runs/:id/trace` can return live request spans.
+
 ### Track D: Graph workbench UI
 
 Linear: [AIN-9](https://linear.app/aineuralmap/issue/AIN-9/track-d-graph-workbench-ui)
@@ -91,3 +99,7 @@ Persistence slice:
 Local DB ingest slice:
 
 - Workbench is ready to switch to `Database` once the API reads persisted graph nodes. Current local verification still shows `Sample` because Postgres is unavailable on this machine.
+
+Cache and trace slice:
+
+- Workbench trace endpoints can now display live API request spans when called with a recorded run ID, while preserving sample trace fallback for the default demo run.

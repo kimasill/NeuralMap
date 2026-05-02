@@ -18,12 +18,16 @@
     "paths": {
       "@neuralmap/schema": ["packages/schema/src/index.ts"],
       "@neuralmap/schema/*": ["packages/schema/src/*"],
+      "@neuralmap/cache": ["packages/cache/src/index.ts"],
+      "@neuralmap/cache/*": ["packages/cache/src/*"],
       "@neuralmap/core": ["packages/core/src/index.ts"],
       "@neuralmap/core/*": ["packages/core/src/*"],
       "@neuralmap/db": ["packages/db/src/index.ts"],
       "@neuralmap/db/*": ["packages/db/src/*"],
       "@neuralmap/ingest": ["packages/ingest/src/index.ts"],
-      "@neuralmap/ingest/*": ["packages/ingest/src/*"]
+      "@neuralmap/ingest/*": ["packages/ingest/src/*"],
+      "@neuralmap/trace": ["packages/trace/src/index.ts"],
+      "@neuralmap/trace/*": ["packages/trace/src/*"]
     }
   }
 }

@@ -121,6 +121,28 @@ Verification:
 - `pnpm --filter @neuralmap/db exec drizzle-kit check --config drizzle.config.ts`
 - `pnpm db:seed:repo:dry` -> 90 files, 91 nodes, 91 edges, 166 chunks
 
+## Cache and Trace Slice
+
+Completed on 2026-05-02:
+
+- Added `packages/cache` with stable cache keys, L1-L4 layer names, in-memory storage, and hit/miss/write/eviction stats.
+- Added `packages/trace` with in-memory trace storage and span recorder helpers.
+- API `/graph/query` now caches repeated graph query responses and reports cache metadata.
+- API `/cache/stats`, `/cache/invalidate`, and `/cache/key/:id` now use the shared cache package.
+- API request tracing now records `user_request` spans through the shared trace package.
+- Workbench trace endpoint can read live request spans for a run ID, with sample spans as fallback.
+
+Verification:
+
+- `pnpm test` -> 5 files, 12 tests passed
+- `pnpm typecheck`
+- `pnpm build`
+- `pnpm --filter @neuralmap/db exec drizzle-kit check --config drizzle.config.ts`
+- `pnpm db:seed:repo:dry` -> 104 files, 105 nodes, 105 edges, 185 chunks
+- API repeated `POST /graph/query` -> first miss, second hit
+- API `GET /cache/stats`
+- API `GET /workbench/runs/http-smoke/trace`
+
 Environment note:
 
 - Docker and local Postgres are not available on this machine, so `pnpm db:migrate` cannot connect to `localhost:5432`.

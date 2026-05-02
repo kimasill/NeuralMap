@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import { createCacheKey, createInMemoryCache, type CacheLayerStats } from "@neuralmap/cache";
 import {
   composeContextPack,
   createHandoffPack,
@@ -10,9 +11,11 @@ import { ingestDocument, ingestRepository, ingestTicket } from "@neuralmap/inges
 import {
   composeContextRequestSchema,
   graphQueryRequestSchema,
+  type GraphNeighborhood,
   type GraphEdge,
   type GraphNode
 } from "@neuralmap/schema";
+import { createInMemoryTraceStore } from "@neuralmap/trace";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 
@@ -44,12 +47,14 @@ export function createApp(): FastifyInstance {
   });
 
   const dataSource = createGraphDataSource();
+  const cache = createInMemoryCache();
+  const traceStore = createInMemoryTraceStore();
 
   void app.register(cors, {
     origin: true
   });
 
-  registerTraceHooks(app);
+  registerTraceHooks(app, traceStore);
 
   app.get("/health", async () => ({
     ok: true,
@@ -67,7 +72,7 @@ export function createApp(): FastifyInstance {
         task: "Phase 1 Memory Backbone",
         model: "gpt-5",
         token_budget: 8000,
-        cache_hit_rate: 0.18
+        cache_hit_rate: calculateCacheHitRate(cache.stats())
       }
     ]
   }));
@@ -76,6 +81,14 @@ export function createApp(): FastifyInstance {
 
   app.get("/workbench/runs/:id/trace", async (request) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const storedSpans = traceStore.listSpans(params.id);
+    if (storedSpans.length > 0) {
+      return {
+        run_id: params.id,
+        spans: storedSpans
+      };
+    }
+
     return {
       run_id: params.id,
       spans: sampleTraceSpans
@@ -107,6 +120,21 @@ export function createApp(): FastifyInstance {
 
   app.post("/graph/query", async (request) => {
     const body = graphQueryRequestSchema.parse(request.body);
+    const cacheKey = createCacheKey({
+      layer: "graph_query",
+      dataMode: dataSource.mode,
+      body
+    });
+    const cached = cache.get<{
+      seeds: ReturnType<typeof rankSeedNodes>;
+      neighborhood: GraphNeighborhood;
+      cache: { hit: true; key: string };
+    }>("retrieval", cacheKey);
+
+    if (cached.hit) {
+      return cached.value;
+    }
+
     const memory = await dataSource.getMemory();
     const seeds = rankSeedNodes(body, memory.nodes);
     const neighborhood = expandGraphNeighborhood(
@@ -115,10 +143,24 @@ export function createApp(): FastifyInstance {
       { hops: body.expand_hops, minConfidence: body.min_edge_confidence }
     );
 
-    return {
+    const response = {
       seeds,
-      neighborhood
+      neighborhood,
+      cache: {
+        hit: false,
+        key: cacheKey
+      }
     };
+
+    cache.set("retrieval", cacheKey, {
+      ...response,
+      cache: {
+        hit: true,
+        key: cacheKey
+      }
+    });
+
+    return response;
   });
 
   app.post("/graph/link", async (request) => {
@@ -138,6 +180,7 @@ export function createApp(): FastifyInstance {
       edges: [edge],
       chunks: []
     });
+    cache.clear();
     return {
       edge,
       persistence: persisted
@@ -186,40 +229,45 @@ export function createApp(): FastifyInstance {
   app.post("/ingest/document", async (request) => {
     const body = sourceDocumentSchema.parse(request.body);
     const emission = ingestDocument(body);
-    return dataSource.persistIngest(emission);
+    const result = await dataSource.persistIngest(emission);
+    cache.clear();
+    return result;
   });
 
   app.post("/ingest/repository", async (request) => {
     const body = repositorySnapshotSchema.parse(request.body);
     const emission = ingestRepository(body);
-    return dataSource.persistIngest(emission);
+    const result = await dataSource.persistIngest(emission);
+    cache.clear();
+    return result;
   });
 
   app.post("/ingest/ticket", async (request) => {
     const body = ticketSnapshotSchema.parse(request.body);
     const emission = ingestTicket(body);
-    return dataSource.persistIngest(emission);
+    const result = await dataSource.persistIngest(emission);
+    cache.clear();
+    return result;
   });
 
   app.get("/cache/stats", async () => ({
-    layers: [
-      { name: "retrieval", hits: 0, misses: 1 },
-      { name: "graph_neighborhood", hits: 0, misses: 1 },
-      { name: "prompt_segment", hits: 0, misses: 0 },
-      { name: "summary", hits: 0, misses: 0 }
-    ]
+    layers: cache.stats()
   }));
 
-  app.post("/cache/invalidate", async () => ({
-    invalidated: true,
-    scope: dataSource.mode
-  }));
+  app.post("/cache/invalidate", async () => {
+    const invalidated = cache.clear();
+    return {
+      invalidated: true,
+      count: invalidated,
+      scope: dataSource.mode
+    };
+  });
 
   app.get("/cache/key/:id", async (request) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     return {
       id: params.id,
-      hit: false
+      hit: cache.stats().some((layer) => cache.has(layer.name, params.id))
     };
   });
 
@@ -260,6 +308,18 @@ export function createApp(): FastifyInstance {
   }));
 
   return app;
+}
+
+function calculateCacheHitRate(stats: CacheLayerStats[]): number {
+  const totals = stats.reduce(
+    (acc, layer) => ({
+      hits: acc.hits + layer.hits,
+      misses: acc.misses + layer.misses
+    }),
+    { hits: 0, misses: 0 }
+  );
+  const total = totals.hits + totals.misses;
+  return total === 0 ? 0 : Number((totals.hits / total).toFixed(4));
 }
 
 const sourceDocumentSchema = z.object({
