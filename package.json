@@ -11,6 +11,8 @@
   "scripts": {
     "build": "tsc -b && pnpm --filter @neuralmap/workbench build:vite",
     "check": "pnpm typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc -b",
     "dev:api": "pnpm --filter @neuralmap/api dev",
     "dev:workbench": "pnpm --filter @neuralmap/workbench dev",
@@ -23,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.9"
   }
 }

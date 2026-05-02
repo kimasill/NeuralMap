@@ -103,6 +103,24 @@ Verification:
 - API `GET /health`
 - Workbench `GET /`
 
+## Test and CI Slice
+
+Completed on 2026-05-02:
+
+- Added Vitest test coverage for `packages/core`, `packages/ingest`, and `apps/api`.
+- Added GitHub Actions CI for install, typecheck, test, build, Drizzle migration check, and repo ingest dry-run.
+- API tests cover sample-mode health and ingest-to-context composition.
+- Core tests cover seed ranking, graph expansion, and Context Pack composition.
+- Ingest tests cover repository import edges and filesystem scanning.
+
+Verification:
+
+- `pnpm test`
+- `pnpm typecheck`
+- `pnpm build`
+- `pnpm --filter @neuralmap/db exec drizzle-kit check --config drizzle.config.ts`
+- `pnpm db:seed:repo:dry` -> 90 files, 91 nodes, 91 edges, 166 chunks
+
 Environment note:
 
 - Docker and local Postgres are not available on this machine, so `pnpm db:migrate` cannot connect to `localhost:5432`.

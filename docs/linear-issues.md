@@ -54,7 +54,7 @@ Persistence slice:
 
 Local DB ingest slice:
 
-- `packages/ingest` now includes a filesystem scanner and CLI for ingesting the current repository. Dry-run result on this repo: 86 files, 87 nodes, 87 edges, 159 chunks.
+- `packages/ingest` now includes a filesystem scanner and CLI for ingesting the current repository. Latest dry-run result on this repo: 90 files, 91 nodes, 91 edges, 166 chunks.
 
 ### Track C: Fastify API and trace middleware
 

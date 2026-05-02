@@ -40,9 +40,7 @@ const linkRequestSchema = z.object({
 
 export function createApp(): FastifyInstance {
   const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? "info"
-    }
+    logger: process.env.NODE_ENV === "test" ? false : { level: process.env.LOG_LEVEL ?? "info" }
   });
 
   const dataSource = createGraphDataSource();
