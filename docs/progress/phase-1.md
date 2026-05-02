@@ -18,11 +18,11 @@ Step 0 is complete. Step 1 tracks are planned and ready to start after review.
 
 | Track | Status | Owner Path | Notes |
 | --- | --- | --- | --- |
-| Step 0: schema + db + ADR | Done | `packages/schema`, `packages/db`, `docs/adr` | [PIC-4](https://linear.app/aineuralmap/issue/PIC-4/step-0-bootstrap-memory-backbone-contracts) |
-| A: core retrieval + context composer | Planned | `packages/core` | [PIC-5](https://linear.app/aineuralmap/issue/PIC-5/track-a-core-retrieval-and-context-composer) |
-| B: repo/doc/ticket ingest | Planned | `packages/ingest` | [PIC-6](https://linear.app/aineuralmap/issue/PIC-6/track-b-repository-document-and-ticket-ingest) |
-| C: Fastify API + trace middleware | Planned | `apps/api` | [PIC-7](https://linear.app/aineuralmap/issue/PIC-7/track-c-fastify-api-and-trace-middleware) |
-| D: React workbench graph UI | Planned | `apps/workbench` | [PIC-8](https://linear.app/aineuralmap/issue/PIC-8/track-d-graph-workbench-ui) |
+| Step 0: schema + db + ADR | Done | `packages/schema`, `packages/db`, `docs/adr` | [AIN-5](https://linear.app/aineuralmap/issue/AIN-5/step-0-bootstrap-memory-backbone-contracts) |
+| A: core retrieval + context composer | Planned | `packages/core` | [AIN-6](https://linear.app/aineuralmap/issue/AIN-6/track-a-core-retrieval-and-context-composer) |
+| B: repo/doc/ticket ingest | Planned | `packages/ingest` | [AIN-7](https://linear.app/aineuralmap/issue/AIN-7/track-b-repository-document-and-ticket-ingest) |
+| C: Fastify API + trace middleware | Planned | `apps/api` | [AIN-8](https://linear.app/aineuralmap/issue/AIN-8/track-c-fastify-api-and-trace-middleware) |
+| D: React workbench graph UI | Planned | `apps/workbench` | [AIN-9](https://linear.app/aineuralmap/issue/AIN-9/track-d-graph-workbench-ui) |
 
 ## Decisions Locked
 
