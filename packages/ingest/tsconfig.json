@@ -6,7 +6,6 @@
     "composite": true,
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
-  "references": [{ "path": "../schema" }],
+  "references": [{ "path": "../schema" }, { "path": "../db" }],
   "include": ["src/**/*.ts"]
 }
-

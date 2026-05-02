@@ -84,3 +84,27 @@ Verification:
 - Workbench `GET /`
 - API `POST /ingest/ticket`
 - API `POST /context/compose`
+
+## Local Database Ingest Slice
+
+Completed on 2026-05-02:
+
+- Added `compose.yaml` for local Postgres + pgvector and Redis.
+- Added root scripts for `infra:up`, `infra:down`, `db:seed:repo`, and `db:seed:repo:dry`.
+- Added repository scanner and CLI ingest command in `packages/ingest`.
+- Added local ingest how-to at `docs/how-to/local-database-ingest.md`.
+
+Verification:
+
+- `pnpm typecheck`
+- `pnpm --filter @neuralmap/db exec drizzle-kit check --config drizzle.config.ts`
+- `pnpm build`
+- `pnpm db:seed:repo:dry`
+- API `GET /health`
+- Workbench `GET /`
+
+Environment note:
+
+- Docker and local Postgres are not available on this machine, so `pnpm db:migrate` cannot connect to `localhost:5432`.
+- Current local API still reports `graph_mode: sample`.
+- Once Postgres is available, run `pnpm infra:up`, `pnpm db:migrate`, and `pnpm db:seed:repo` to switch the Workbench badge to `Database`.

@@ -13,10 +13,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "ingest:repo": "tsx src/cli/ingest-repo.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@neuralmap/db": "workspace:*",
     "@neuralmap/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3"
   }
 }
-

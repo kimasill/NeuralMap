@@ -12,8 +12,14 @@
     "build": "tsc -b && pnpm --filter @neuralmap/workbench build:vite",
     "check": "pnpm typecheck",
     "typecheck": "tsc -b",
+    "dev:api": "pnpm --filter @neuralmap/api dev",
+    "dev:workbench": "pnpm --filter @neuralmap/workbench dev",
+    "infra:up": "docker compose up -d postgres redis",
+    "infra:down": "docker compose down",
     "db:generate": "pnpm --filter @neuralmap/db db:generate",
-    "db:migrate": "pnpm --filter @neuralmap/db db:migrate"
+    "db:migrate": "pnpm --filter @neuralmap/db db:migrate",
+    "db:seed:repo": "pnpm --filter @neuralmap/ingest ingest:repo --id neuralmap",
+    "db:seed:repo:dry": "pnpm --filter @neuralmap/ingest ingest:repo --id neuralmap --dry-run"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

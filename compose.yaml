@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: neuralmap-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: neuralmap
+      POSTGRES_USER: neuralmap
+      POSTGRES_PASSWORD: neuralmap
+    ports:
+      - "5432:5432"
+    volumes:
+      - neuralmap_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neuralmap -d neuralmap"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: neuralmap-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - neuralmap_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  neuralmap_postgres_data:
+  neuralmap_redis_data:
+

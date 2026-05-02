@@ -34,6 +34,10 @@ Persistence slice:
 
 - API context composition now saves packs through the graph data source when Postgres is configured.
 
+Local DB ingest slice:
+
+- `db:seed:repo` can now persist repository-derived graph nodes into Postgres, which gives the composer live graph memory once DB mode is active.
+
 ### Track B: Repository, document, and ticket ingest
 
 Linear: [AIN-7](https://linear.app/aineuralmap/issue/AIN-7/track-b-repository-document-and-ticket-ingest)
@@ -47,6 +51,10 @@ Initial slice:
 Persistence slice:
 
 - API endpoints accept document, repository, and ticket snapshots and persist emitted nodes, edges, and chunks through the DB graph store.
+
+Local DB ingest slice:
+
+- `packages/ingest` now includes a filesystem scanner and CLI for ingesting the current repository. Dry-run result on this repo: 86 files, 87 nodes, 87 edges, 159 chunks.
 
 ### Track C: Fastify API and trace middleware
 
@@ -62,6 +70,10 @@ Persistence slice:
 
 - API now uses a DB-backed graph data source with sample fallback and exposes ingest endpoints.
 
+Local DB ingest slice:
+
+- Root scripts and local infrastructure config now cover Postgres/pgvector, Redis, migrations, and repository seeding. This machine lacks Docker/Postgres, so API remains in `sample` mode locally until services are available.
+
 ### Track D: Graph workbench UI
 
 Linear: [AIN-9](https://linear.app/aineuralmap/issue/AIN-9/track-d-graph-workbench-ui)
@@ -75,3 +87,7 @@ Initial slice:
 Persistence slice:
 
 - Workbench shows a source badge so users can tell whether the graph is coming from `Database` or `Sample` data.
+
+Local DB ingest slice:
+
+- Workbench is ready to switch to `Database` once the API reads persisted graph nodes. Current local verification still shows `Sample` because Postgres is unavailable on this machine.

@@ -24,3 +24,16 @@ pnpm db:migrate
 
 Copy `.env.example` to `.env` before running database commands locally.
 
+## Local Database Ingest
+
+```bash
+pnpm infra:up
+pnpm db:migrate
+pnpm db:seed:repo
+pnpm dev:api
+pnpm dev:workbench
+```
+
+Use `pnpm db:seed:repo:dry` to inspect the repository ingest payload without writing to Postgres.
+
+See [Run Local Database Ingest](docs/how-to/local-database-ingest.md) for the full flow.
