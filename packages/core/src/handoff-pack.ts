@@ -26,6 +26,12 @@ export function createHandoffPack(input: CreateHandoffPackInput): HandoffPack {
     blockers: input.blockers ?? input.contextPack?.blockers ?? [],
     constraints: input.constraints ?? [],
     recommended_next_actions: input.recommendedNextActions ?? [],
+    metadata: input.contextPack
+      ? {
+          context_pack_id: input.contextPack.id,
+          context_pack_created_at: input.contextPack.created_at
+        }
+      : {},
     created_at: nowIso()
   };
 
@@ -35,4 +41,3 @@ export function createHandoffPack(input: CreateHandoffPackInput): HandoffPack {
 
   return pack;
 }
-

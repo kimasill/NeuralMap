@@ -6,6 +6,8 @@ import type { WorkbenchGraph } from "./types.js";
 interface GraphCanvasProps {
   graph: WorkbenchGraph;
   selectedNodeId: string | null;
+  focusedNodeIds?: readonly string[];
+  focusedEdgeIds?: readonly string[];
   onSelectNode: (nodeId: string) => void;
 }
 
@@ -66,6 +68,22 @@ const stylesheet: StylesheetJson = [
     }
   },
   {
+    selector: "node.query-hit",
+    style: {
+      "border-color": "#22c55e",
+      "border-width": 4
+    }
+  },
+  {
+    selector: "edge.query-hit",
+    style: {
+      "line-color": "#22c55e",
+      opacity: 0.95,
+      "target-arrow-color": "#22c55e",
+      width: "mapData(weight, 0, 1, 2, 6)"
+    }
+  },
+  {
     selector: "node:selected",
     style: {
       "border-color": "#f8fafc",
@@ -74,32 +92,45 @@ const stylesheet: StylesheetJson = [
   }
 ];
 
-export const GraphCanvas = memo(function GraphCanvas({ graph, selectedNodeId, onSelectNode }: GraphCanvasProps) {
+export const GraphCanvas = memo(function GraphCanvas({
+  graph,
+  selectedNodeId,
+  focusedNodeIds = [],
+  focusedEdgeIds = [],
+  onSelectNode
+}: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
 
   const elements = useMemo(
-    () => [
-      ...graph.nodes.map((node) => ({
-        data: {
-          id: node.id,
-          label: node.title,
-          type: node.type,
-          score: node.importance_score,
-          color: nodeColors[node.type] ?? "#94a3b8"
-        }
-      })),
-      ...graph.edges.map((edge) => ({
-        data: {
-          id: edge.id,
-          source: edge.from,
-          target: edge.to,
-          type: edge.type,
-          weight: edge.weight
-        }
-      }))
-    ],
-    [graph]
+    () => {
+      const focusedNodes = new Set(focusedNodeIds);
+      const focusedEdges = new Set(focusedEdgeIds);
+
+      return [
+        ...graph.nodes.map((node) => ({
+          classes: focusedNodes.has(node.id) ? "query-hit" : "",
+          data: {
+            id: node.id,
+            label: node.title,
+            type: node.type,
+            score: node.importance_score,
+            color: nodeColors[node.type] ?? "#94a3b8"
+          }
+        })),
+        ...graph.edges.map((edge) => ({
+          classes: focusedEdges.has(edge.id) ? "query-hit" : "",
+          data: {
+            id: edge.id,
+            source: edge.from,
+            target: edge.to,
+            type: edge.type,
+            weight: edge.weight
+          }
+        }))
+      ];
+    },
+    [focusedEdgeIds, focusedNodeIds, graph]
   );
 
   useEffect(() => {

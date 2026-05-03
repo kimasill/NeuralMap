@@ -19,6 +19,7 @@ export const contextPackSchema = z.object({
   blockers: z.array(z.string().min(1)).default([]),
   template_id: z.string().min(1).optional(),
   token_budget: z.number().int().positive(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   created_at: z.string().datetime()
 });
 
@@ -48,8 +49,8 @@ export const handoffPackSchema = z.object({
   blockers: z.array(z.string().min(1)),
   constraints: z.array(z.string().min(1)),
   recommended_next_actions: z.array(z.string().min(1)),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   created_at: z.string().datetime()
 });
 
 export type HandoffPack = z.infer<typeof handoffPackSchema>;
-

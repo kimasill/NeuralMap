@@ -18,7 +18,6 @@ export interface TraceHandle {
 export interface TraceStore {
   addSpan(span: TraceSpan): void;
   updateSpan(span: TraceSpan): void;
-  listSpans(runId: string): TraceSpan[];
-  clear(runId?: string): number;
+  listSpans(runId: string): TraceSpan[] | Promise<TraceSpan[]>;
+  clear(runId?: string): number | Promise<number>;
 }
-

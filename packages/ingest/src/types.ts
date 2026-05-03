@@ -48,3 +48,22 @@ export interface TicketSnapshot {
   comments?: string[] | undefined;
   metadata?: Record<string, unknown> | undefined;
 }
+
+export interface SimulationEventSnapshot {
+  simulation_id: string;
+  session_id: string;
+  event_id: string;
+  content: string;
+  actor_id?: string | undefined;
+  actor_name?: string | undefined;
+  previous_event_id?: string | undefined;
+  occurred_at?: string | undefined;
+  importance?: number | undefined;
+  tags?: string[] | undefined;
+  participants?: Array<{
+    id: string;
+    name?: string | undefined;
+    role?: string | undefined;
+  }> | undefined;
+  metadata?: Record<string, unknown> | undefined;
+}

@@ -19,7 +19,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "db:smoke": "pnpm build && node dist/cli/smoke.js",
+    "db:smoke:required": "pnpm build && node dist/cli/smoke.js --require"
   },
   "dependencies": {
     "@neuralmap/schema": "workspace:*",
@@ -30,4 +32,3 @@
     "drizzle-kit": "^0.30.6"
   }
 }
-
