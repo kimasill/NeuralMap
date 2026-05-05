@@ -39,6 +39,11 @@ export const graphNodes = pgTable(
     index("graph_nodes_type_idx").on(table.type),
     index("graph_nodes_source_idx").on(table.sourceSystem),
     index("graph_nodes_updated_at_idx").on(table.updatedAt),
+    index("graph_nodes_profile_idx").on(sql`(${table.metadata}->>'profile_id')`),
+    index("graph_nodes_ontology_profile_idx").on(sql`(${table.metadata}->'ontology'->>'profile_id')`),
+    index("graph_nodes_ontology_type_idx").on(sql`(${table.metadata}->'ontology'->>'type')`),
+    index("graph_nodes_lifecycle_idx").on(sql`(${table.metadata}->>'lifecycle_status')`),
+    index("graph_nodes_valid_to_idx").on(sql`(${table.metadata}->>'valid_to')`),
     index("graph_nodes_embedding_hnsw_idx").using("hnsw", table.embedding.op("vector_cosine_ops"))
   ]
 );
@@ -88,7 +93,29 @@ export const graphEdges = pgTable(
     index("graph_edges_to_idx").on(table.toNodeId),
     index("graph_edges_type_idx").on(table.type),
     index("graph_edges_confidence_idx").on(table.confidence),
+    index("graph_edges_profile_idx").on(sql`(${table.metadata}->>'profile_id')`),
+    index("graph_edges_synapse_type_idx").on(sql`(${table.metadata}->>'synapse_type')`),
+    index("graph_edges_pointer_key_idx").on(sql`(${table.metadata}->'properties'->>'current_pointer_key')`),
+    index("graph_edges_lifecycle_idx").on(sql`(${table.metadata}->>'lifecycle_status')`),
     uniqueIndex("graph_edges_unique_directed_idx").on(table.fromNodeId, table.toNodeId, table.type)
+  ]
+);
+
+export const graphDeltaCommits = pgTable(
+  "graph_delta_commits",
+  {
+    idempotencyKey: text("idempotency_key").primaryKey(),
+    requestHash: text("request_hash").notNull(),
+    profileId: text("profile_id"),
+    scope: jsonb("scope").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    response: jsonb("response").$type<Record<string, unknown>>().notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    index("graph_delta_commits_profile_idx").on(table.profileId),
+    index("graph_delta_commits_created_at_idx").on(table.createdAt),
+    index("graph_delta_commits_scope_tenant_idx").on(sql`(${table.scope}->>'tenant_id')`)
   ]
 );
 

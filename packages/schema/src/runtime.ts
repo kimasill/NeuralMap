@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { graphScopeSchema } from "./scope.js";
 import { runStatuses } from "./values.js";
 
 export const agentRunSchema = z.object({
@@ -9,6 +10,7 @@ export const agentRunSchema = z.object({
   objective: z.string().min(1),
   status: z.enum(runStatuses),
   context_pack_id: z.string().min(1).optional(),
+  scope: graphScopeSchema.optional(),
   started_at: z.string().datetime().optional(),
   completed_at: z.string().datetime().optional(),
   metadata: z.record(z.string(), z.unknown()).default({})
@@ -34,8 +36,8 @@ export const traceSpanSchema = z.object({
   ]),
   started_at: z.string().datetime(),
   ended_at: z.string().datetime().optional(),
+  scope: graphScopeSchema.optional(),
   attributes: z.record(z.string(), z.unknown()).default({})
 });
 
 export type TraceSpan = z.infer<typeof traceSpanSchema>;
-

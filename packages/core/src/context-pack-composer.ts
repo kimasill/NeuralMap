@@ -1,8 +1,16 @@
 import type { ComposeContextRequest, ContextPack, EvidenceItem, GraphNode } from "@neuralmap/schema";
+import { getScopeFromMetadata, scopeMatches } from "@neuralmap/schema";
 
+import {
+  contentModuleSortScore,
+  isActiveContentModule,
+  isContentModuleNode,
+  listIncludedContentModules
+} from "./content-modules.js";
 import { expandGraphNeighborhood, type GraphMemory } from "./graph-expansion.js";
 import { createId, nowIso } from "./ids.js";
 import { classifyQueryIntent } from "./intent.js";
+import { isConsolidatedMemoryNode, isRawEventNode, rawEventsCoveredByConsolidatedMemory } from "./memory-consolidation.js";
 import { rankSeedNodes } from "./retrieval.js";
 import type { SeedRetrievalCandidate } from "./retrieval.js";
 import { selectContextTemplate, type ContextTemplate } from "./templates.js";
@@ -35,7 +43,14 @@ export function composeContextPack(
   options: ContextCompositionOptions = {}
 ): ContextPack {
   const intent = classifyQueryIntent(request.query ?? request.objective);
-  const compositionMemory = createCompositionMemory(memory, request.seed_node_ids, intent.preferred_node_types.includes("Artifact"));
+  const activationTags = request.activation_tags ?? [];
+  const compositionMemory = createCompositionMemory({
+    memory,
+    explicitSeedNodeIds: request.seed_node_ids,
+    includeGeneratedArtifacts: intent.preferred_node_types.includes("Artifact"),
+    activationTags,
+    scope: request.scope
+  });
   const template = options.template ?? selectContextTemplate(request, intent);
   const rankedSeeds = request.query
     ? rankSeedNodes(
@@ -65,9 +80,10 @@ export function composeContextPack(
   const maxEvidenceItems = options.maxEvidenceItems ?? 8;
   const evidence = neighborhood.nodes
     .filter(hasSummary)
-    .sort((a, b) => b.importance_score - a.importance_score)
+    .sort((a, b) => compareEvidenceNodes(a, b, activationTags))
     .slice(0, maxEvidenceItems)
     .map(toEvidenceItem);
+  const sections = createContextSections(request, neighborhood.nodes, evidence);
   const evidenceScores = new Map(evidence.map((item) => [item.node_id, item.score]));
   const nodeExplanations = createNodeExplanations({
     requestedSeedNodeIds: request.seed_node_ids,
@@ -98,11 +114,14 @@ export function composeContextPack(
     session_id: request.session_id,
     node_ids: neighborhood.nodes.map((node) => node.id),
     evidence,
+    ...(sections ? { sections } : {}),
     decisions,
     blockers,
     template_id: template.id,
     token_budget: request.token_budget,
+    ...(request.scope ? { scope: request.scope } : {}),
     metadata: {
+      ...(request.scope ? { scope: request.scope } : {}),
       intent: {
         kind: intent.kind,
         confidence: intent.confidence,
@@ -119,6 +138,13 @@ export function composeContextPack(
         version: template.version,
         slots: template.slots
       },
+      ...(request.profile_id ? { profile_id: request.profile_id } : {}),
+      ...(request.context_policy
+        ? {
+            context_policy: request.context_policy
+          }
+        : {}),
+      content_modules: listIncludedContentModules(neighborhood.nodes, activationTags),
       node_explanations: nodeExplanations,
       ...(options.promptSegmentCache
         ? {
@@ -141,11 +167,74 @@ function hasSummary(node: GraphNode): boolean {
 }
 
 function toEvidenceItem(node: GraphNode): EvidenceItem {
+  const moduleBoost = isContentModuleNode(node) ? Math.min(0.2, contentModuleSortScore(node, []) * 0.08) : 0;
+  const consolidatedBoost = isConsolidatedMemoryNode(node) ? 0.12 : 0;
   return {
     node_id: node.id,
     snippet: node.summary ?? node.content_ref ?? node.title,
-    score: Number((node.importance_score * 0.5 + node.trust_score * 0.3 + node.freshness_score * 0.2).toFixed(4))
+    score: Number(
+      Math.min(1, node.importance_score * 0.5 + node.trust_score * 0.3 + node.freshness_score * 0.2 + moduleBoost + consolidatedBoost).toFixed(4)
+    )
   };
+}
+
+function createContextSections(
+  request: ComposeContextRequest,
+  nodes: readonly GraphNode[],
+  evidence: readonly EvidenceItem[]
+): Record<string, EvidenceItem[]> | undefined {
+  const sectionNames = request.context_policy?.sections;
+  if (!sectionNames?.length) {
+    return undefined;
+  }
+
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const sections: Record<string, EvidenceItem[]> = {};
+
+  for (const section of sectionNames) {
+    sections[section] = evidence.filter((item) => belongsToSection(nodesById.get(item.node_id), section));
+  }
+
+  return sections;
+}
+
+function belongsToSection(node: GraphNode | undefined, section: string): boolean {
+  if (!node) {
+    return false;
+  }
+
+  const labels = getNodeLabels(node);
+  const ontologyType = node.ontology?.type ?? readMetadataString(node.metadata.ontology, "type");
+  const kind = typeof node.metadata.kind === "string" ? node.metadata.kind : "";
+  const sectionKey = section.toLowerCase();
+
+  if (sectionKey.includes("scene")) {
+    return labels.includes("Scene") || ontologyType === "Scene" || node.type === "Session";
+  }
+  if (sectionKey.includes("state")) {
+    return labels.includes("State") || ontologyType === "State" || kind.includes("state");
+  }
+  if (sectionKey.includes("perspective") || sectionKey.includes("knowledge")) {
+    return labels.some((label) => ["Perspective", "Observation", "Belief"].includes(label)) ||
+      ["Observation", "Belief"].includes(ontologyType ?? "");
+  }
+  if (sectionKey.includes("history") || sectionKey.includes("event")) {
+    return labels.includes("Event") || ontologyType === "Event" || node.type === "Task" || kind.endsWith("_event");
+  }
+  if (sectionKey.includes("open") || sectionKey.includes("thread") || sectionKey.includes("loop")) {
+    return kind.includes("open_loop") || labels.includes("OpenThread");
+  }
+
+  return true;
+}
+
+function compareEvidenceNodes(a: GraphNode, b: GraphNode, activationTags: readonly string[]): number {
+  const aConsolidated = isConsolidatedMemoryNode(a) ? 0.18 : 0;
+  const bConsolidated = isConsolidatedMemoryNode(b) ? 0.18 : 0;
+  const aModule = isContentModuleNode(a) ? contentModuleSortScore(a, activationTags) : a.importance_score;
+  const bModule = isContentModuleNode(b) ? contentModuleSortScore(b, activationTags) : b.importance_score;
+
+  return b.importance_score + bModule + bConsolidated - (a.importance_score + aModule + aConsolidated);
 }
 
 function createNodeExplanations(input: {
@@ -258,34 +347,87 @@ function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
-function createCompositionMemory(
-  memory: GraphMemory,
-  explicitSeedNodeIds: readonly string[],
-  includeGeneratedArtifacts: boolean
-): GraphMemory {
-  if (includeGeneratedArtifacts) {
-    return memory;
+function createCompositionMemory(input: {
+  memory: GraphMemory;
+  explicitSeedNodeIds: readonly string[];
+  includeGeneratedArtifacts: boolean;
+  activationTags: readonly string[];
+  scope: ComposeContextRequest["scope"];
+}): GraphMemory {
+  const explicitSeeds = new Set(input.explicitSeedNodeIds);
+  const coveredRawEventIds = rawEventsCoveredByConsolidatedMemory(input.memory);
+  const excludedNodeIds = new Set<string>();
+
+  for (const node of input.memory.nodes) {
+    if (!explicitSeeds.has(node.id) && !scopeMatches(node.scope ?? getScopeFromMetadata(node.metadata), input.scope)) {
+      excludedNodeIds.add(node.id);
+      continue;
+    }
+
+    if (!explicitSeeds.has(node.id) && isRedactedNode(node)) {
+      excludedNodeIds.add(node.id);
+      continue;
+    }
+
+    if (!input.includeGeneratedArtifacts && isGeneratedRuntimeArtifact(node) && !explicitSeeds.has(node.id)) {
+      excludedNodeIds.add(node.id);
+      continue;
+    }
+
+    if (isContentModuleNode(node) && !explicitSeeds.has(node.id) && !isActiveContentModule(node)) {
+      excludedNodeIds.add(node.id);
+      continue;
+    }
+
+    if (isRawEventNode(node) && coveredRawEventIds.has(node.id) && !explicitSeeds.has(node.id)) {
+      excludedNodeIds.add(node.id);
+    }
   }
 
-  const explicitSeeds = new Set(explicitSeedNodeIds);
-  const excludedNodeIds = new Set(
-    memory.nodes
-      .filter((node) => isGeneratedRuntimeArtifact(node) && !explicitSeeds.has(node.id))
-      .map((node) => node.id)
-  );
-
   if (excludedNodeIds.size === 0) {
-    return memory;
+    return input.memory;
   }
 
   return {
-    nodes: memory.nodes.filter((node) => !excludedNodeIds.has(node.id)),
-    edges: memory.edges.filter((edge) => !excludedNodeIds.has(edge.from) && !excludedNodeIds.has(edge.to))
+    nodes: input.memory.nodes.filter((node) => !excludedNodeIds.has(node.id)),
+    edges: input.memory.edges.filter((edge) => {
+      const edgeScope = edge.scope ?? getScopeFromMetadata(edge.metadata);
+      return (
+        !excludedNodeIds.has(edge.from) &&
+        !excludedNodeIds.has(edge.to) &&
+        scopeMatches(edgeScope, input.scope) &&
+        !isRedactedEdge(edge)
+      );
+    })
   };
 }
 
 function isGeneratedRuntimeArtifact(node: GraphNode): boolean {
   return node.type === "Artifact" && node.source_system === "runtime" && isArtifactSourceMetadata(node.metadata.source);
+}
+
+function isRedactedNode(node: GraphNode): boolean {
+  return node.metadata.redacted === true || node.metadata.deleted === true || node.metadata.lifecycle_status === "redacted";
+}
+
+function isRedactedEdge(edge: { metadata: Record<string, unknown> }): boolean {
+  return edge.metadata.redacted === true || edge.metadata.deleted === true || edge.metadata.lifecycle_status === "redacted";
+}
+
+function getNodeLabels(node: GraphNode): string[] {
+  if (node.labels) {
+    return node.labels;
+  }
+  const labels = node.metadata.labels;
+  return Array.isArray(labels) ? labels.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readMetadataString(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const recordValue = (value as Record<string, unknown>)[key];
+  return typeof recordValue === "string" ? recordValue : undefined;
 }
 
 function isArtifactSourceMetadata(value: unknown): value is { kind: string; id: string } {

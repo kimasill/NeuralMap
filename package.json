@@ -26,6 +26,8 @@
     "db:seed:repo:dry": "pnpm --filter @neuralmap/ingest ingest:repo --id neuralmap --dry-run",
     "eval:graphrag": "node scripts/evaluate-graphrag.mjs",
     "eval:simulation": "node scripts/evaluate-simulation-continuity.mjs",
+    "eval:neuron-synapse": "node scripts/evaluate-neuron-synapse-compression.mjs",
+    "eval:memory-compare": "node scripts/compare-memory-strategies.mjs",
     "bench:graphrag-core": "node scripts/benchmark-core-graphrag.mjs"
   },
   "devDependencies": {

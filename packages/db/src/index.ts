@@ -1,5 +1,6 @@
 export * from "./client.js";
 export * from "./embedding.js";
+export * from "./embedding-provider.js";
 export * from "./graph-store.js";
 export * from "./schema.js";
 export * from "./trace-store.js";

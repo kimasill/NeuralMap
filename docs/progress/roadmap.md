@@ -1,12 +1,12 @@
 # Progress Roadmap
 
-Date updated: 2026-05-03
+Date updated: 2026-05-04
 
 ## Active Phase
 
 The active project phase is now **Phase 5: Multi-Agent Runtime**.
 
-Phase 1, Phase 2, Phase 3, and Phase 4 are complete. Phase 1 graduated the Memory Backbone loop; Phase 2 graduated the Graph UX layer with Handoff relationships, Timeline/Trace inspection, repository-scale graph controls, and DB-required smoke against local Postgres/pgvector through WSL Docker. Phase 3 graduated Smart Caching with policy metadata, tagged entries, entry inspection, and targeted invalidation controls. Phase 4 graduated Dynamic Profiling with deterministic model profile policy, budget-aware routing, and quality feedback.
+Phase 1, Phase 2, Phase 3, and Phase 4 are complete. Phase 1 graduated the Memory Backbone loop; Phase 2 graduated the Graph UX layer with Handoff relationships, Timeline/Trace inspection, repository-scale graph controls, and DB-required smoke against local Postgres/pgvector through WSL Docker. Phase 3 graduated Smart Caching with policy metadata, tagged entries, entry inspection, and targeted invalidation controls. Phase 4 graduated Dynamic Profiling with deterministic model profile policy, budget-aware routing, and quality feedback. Phase 5 now has its first framework slice: content modules, event-memory consolidation, scoped agent context, embedding backfill controls, and tenant-safe redaction.
 
 The completed loop is:
 
@@ -21,6 +21,8 @@ The completed loop is:
 - inspect artifacts, cache policy/entries, evidence, why-included explanations, timeline, traces, and graph-density controls from the Workbench
 - route agent work through dynamic model profiles with quality feedback
 - preserve external simulation memory across sessions through continuity Context Packs
+- isolate graph/context/artifact/trace reads by tenant scope and redact deleted knowledge
+- compose per-agent Context Packs from registered agent definitions
 
 ## Phase Status
 
@@ -30,7 +32,7 @@ The completed loop is:
 | Phase 2: Graph UX | Complete | 100% | [phase-2.md](phase-2.md) |
 | Phase 3: Smart Caching | Complete | 100% | [phase-3.md](phase-3.md) |
 | Phase 4: Dynamic Profiling | Complete | 100% | [phase-4.md](phase-4.md), [AIN-11](https://linear.app/aineuralmap/issue/AIN-11/phase-4-dynamic-profiling) |
-| Phase 5: Multi-Agent Runtime | Active | 7% | No standalone phase doc yet |
+| Phase 5: Multi-Agent Runtime | Active | 38% | [phase-5.md](phase-5.md), [AIN-12](https://linear.app/aineuralmap/issue/AIN-12/content-module-metadata-and-activation-aware-retrieval), [AIN-13](https://linear.app/aineuralmap/issue/AIN-13/generic-event-salience-and-memory-consolidation), [AIN-14](https://linear.app/aineuralmap/issue/AIN-14/phase-5-generic-agent-registry-and-per-agent-context-composer), [AIN-15](https://linear.app/aineuralmap/issue/AIN-15/external-embeddings-and-vector-backfill-controls), [AIN-16](https://linear.app/aineuralmap/issue/AIN-16/tenant-safe-scoped-retrieval-and-redaction) |
 
 ## Phase Document Policy
 
@@ -38,7 +40,7 @@ The completed loop is:
 - `phase-2.md` is the completed Graph UX control board.
 - `phase-3.md` is the completed Smart Caching control board.
 - `phase-4.md` is the completed Dynamic Profiling control board.
-- Phase 5 should get a standalone phase doc once active implementation begins.
+- `phase-5.md` is the active Multi-Agent Runtime control board.
 
 ## Phase 2 Graduation Signals
 
@@ -74,6 +76,6 @@ Phase 4 exited once these became true:
 
 | Priority | Tracker | Work Item | Why Now |
 | --- | --- | --- | --- |
-| P0 | Phase 5 | Agent registry | Turns the single-agent shell into explicit runtime participants. |
-| P1 | Phase 5 | Per-agent context composer | Lets each agent receive the right graph context slice. |
-| P1 | Phase 5 | Merge and validation pipeline | Needed before multi-agent outputs can safely update durable memory. |
+| P0 | Phase 5 | Durable orchestrator execution loop | Turns registry/run-state contracts into persisted execution. |
+| P1 | Phase 5 | Human approval nodes | Needed before high-risk memory writes become durable facts. |
+| P1 | Phase 5 | Workbench runtime UX | Surfaces registered agents, validation queues, redaction audit, and backfill jobs. |

@@ -11,6 +11,8 @@ Windows note for this workstation:
 
 - Docker Desktop may require an interactive UAC approval. If the Windows `docker` command is unavailable, use the installed WSL Ubuntu 24.04 Docker Engine.
 - The root `pnpm infra:up` and `pnpm infra:down` scripts automatically use Docker Desktop when available and fall back to WSL Docker Compose on Windows.
+- `pnpm infra:up` waits for Postgres and Redis health checks before returning.
+- Root commands that run through `scripts/with-env.mjs` refresh a WSL-backed `DATABASE_URL` to the current WSL IP when `NEURALMAP_DATABASE_HOST_SOURCE=wsl` is set, or when the checked-in local URL already points at a WSL-like `172.16.0.0/12` address.
 - Keep WSL Docker alive while the API is using the database:
 
 ```powershell
@@ -24,7 +26,14 @@ Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "
 wsl -d Ubuntu-24.04 --user root -- bash -lc "service docker start || true; cd /mnt/s/Project/NeuralMap && docker compose up -d postgres redis"
 ```
 
-- If `localhost:5432` is not forwarded from WSL to Windows, set URLs to the current WSL IP:
+- If `localhost:5432` is not forwarded from WSL to Windows, prefer the automatic WSL host mode in `.env`:
+
+```env
+DATABASE_URL=postgres://neuralmap:neuralmap@localhost:5432/neuralmap
+NEURALMAP_DATABASE_HOST_SOURCE=wsl
+```
+
+The root `pnpm db:*` and `pnpm dev:api` commands will replace the URL host with the current WSL IP at runtime. For manual one-off commands, set URLs to the current WSL IP:
 
 ```powershell
 $wslIp = (wsl -d Ubuntu-24.04 --user root -- hostname -I).Trim().Split()[0]
@@ -83,7 +92,7 @@ pnpm dev:workbench
 
 The Workbench source badge should show `Database` after the API can read persisted graph nodes from Postgres.
 
-On this workstation, the verified DB URL currently points to the WSL service address:
+On this workstation, the verified DB URL can point to the WSL service address directly, but automatic WSL host mode avoids editing `.env` after WSL restarts:
 
 ```text
 postgres://neuralmap:neuralmap@172.20.24.141:5432/neuralmap

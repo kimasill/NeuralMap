@@ -208,6 +208,8 @@ function expandNodeTokens(node: GraphNode): string[] {
   return unique([
     ...tokens,
     node.type.toLowerCase(),
+    ...(node.labels ?? []).map((label) => label.toLowerCase()),
+    ...(node.ontology ? [node.ontology.profile_id, node.ontology.type] : []),
     ...(node.source_system ? [node.source_system] : []),
     ...tokens.flatMap((token) => semanticAliases[token] ?? [])
   ]);
@@ -220,6 +222,10 @@ function searchableText(node: GraphNode): string {
     node.title,
     node.summary ?? "",
     node.content_ref ?? "",
+    ...(node.labels ?? []),
+    node.ontology?.profile_id ?? "",
+    node.ontology?.type ?? "",
+    JSON.stringify(node.properties ?? {}),
     JSON.stringify(node.metadata)
   ]
     .join(" ")

@@ -9,19 +9,34 @@ import {
   type CacheStore
 } from "@neuralmap/cache";
 import {
+  canTransitionRunStatus,
   composeContextPack,
+  consolidateEventMemory,
   type CreateHandoffPackInput,
+  createDefaultAgents,
   createHandoffPack,
   classifyQueryIntent,
+  compileGraphDelta,
   edgeTypeIntentBoosts,
   expandGraphNeighborhood,
+  createGraphProfileRegistry,
+  currentGraphView,
+  getSynapseType,
+  isContentModuleNode,
   listContextTemplates,
   listModelProfiles,
+  nextRunStatus,
+  queryGraphNeurons,
   rankSeedNodes,
   renderPromptSegment,
   sampleTraceSpans,
   selectContextTemplate,
   selectModelProfile,
+  traverseGraph,
+  toAgentContextRequest,
+  validateMemoryWrites,
+  type AgentDefinition,
+  type MemoryWriteCandidate,
   type SemanticSeedHint,
   type GraphMemory,
   type ModelQualitySignal,
@@ -30,6 +45,9 @@ import {
 import type { ContextTemplate, PromptSegment } from "@neuralmap/core";
 import { createDbClient, createDbTraceStore } from "@neuralmap/db";
 import {
+  chunkText,
+  contentModuleNodeId,
+  ingestContentModule,
   ingestDocument,
   ingestRepository,
   ingestSimulationEvent,
@@ -39,12 +57,23 @@ import {
 } from "@neuralmap/ingest";
 import {
   composeContextRequestSchema,
+  graphCurrentViewRequestSchema,
+  graphDeltaRequestSchema,
+  graphNeuronQueryRequestSchema,
+  graphProfileSchema,
+  graphScopeSchema,
+  graphNodeSchema,
   graphQueryRequestSchema,
+  graphTraverseRequestSchema,
+  normalizeScope,
+  runStatuses,
+  scopeMatches,
   type ContextPack,
   type ComposeContextRequest,
   type GraphNeighborhood,
   type GraphEdge,
   type GraphNode,
+  type GraphScope,
   type HandoffPack,
   type TraceSpan
 } from "@neuralmap/schema";
@@ -64,7 +93,8 @@ const handoffRequestSchema = z.object({
   open_loops: z.array(z.string()).optional(),
   blockers: z.array(z.string()).optional(),
   constraints: z.array(z.string()).optional(),
-  recommended_next_actions: z.array(z.string()).optional()
+  recommended_next_actions: z.array(z.string()).optional(),
+  scope: graphScopeSchema.optional()
 });
 
 const linkRequestSchema = z.object({
@@ -80,14 +110,17 @@ const refreshContextPackRequestSchema = z.object({
   query: z.string().min(1).optional(),
   task_type: z.string().min(1).optional(),
   token_budget: z.number().int().positive().optional(),
-  seed_node_ids: z.array(z.string().min(1)).optional()
+  seed_node_ids: z.array(z.string().min(1)).optional(),
+  activation_tags: z.array(z.string().min(1)).optional(),
+  scope: graphScopeSchema.optional()
 });
 
 const agentRunRequestSchema = z.object({
   task: z.string().min(1).optional(),
   objective: z.string().min(1).optional(),
   context_pack_id: z.string().min(1).optional(),
-  model_profile: z.string().min(1).optional()
+  model_profile: z.string().min(1).optional(),
+  scope: graphScopeSchema.optional()
 });
 
 const modelRouteRequestSchema = z.object({
@@ -96,7 +129,8 @@ const modelRouteRequestSchema = z.object({
   query: z.string().min(1).optional(),
   context_pack_id: z.string().min(1).optional(),
   token_budget: z.number().int().positive().optional(),
-  model_profile: z.string().min(1).optional()
+  model_profile: z.string().min(1).optional(),
+  scope: graphScopeSchema.optional()
 });
 
 const modelFeedbackRequestSchema = z.object({
@@ -129,6 +163,103 @@ const cacheInvalidateRequestSchema = z
   })
   .default({});
 
+const contentModuleRequestSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  body: z.string().min(1),
+  module_kind: z.enum(["document", "template", "policy", "snippet", "guide", "reference"]).optional(),
+  parent_module_id: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
+  priority: z.number().min(0).max(1).optional(),
+  order: z.number().optional(),
+  activation_tags: z.array(z.string().min(1)).optional(),
+  owner_scope: z.string().min(1).optional(),
+  version: z.string().min(1).optional(),
+  source_uri: z.string().min(1).optional(),
+  lifecycle_status: z.enum(["draft", "active", "deprecated", "archived"]).optional(),
+  scope: graphScopeSchema.optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const contentModuleQuerySchema = z.object({
+  query: z.string().min(1),
+  activation_tags: z.array(z.string().min(1)).optional(),
+  token_budget: z.number().int().positive().default(2000),
+  top_k: z.number().int().positive().max(25).default(8),
+  scope: graphScopeSchema.optional()
+});
+
+const memoryConsolidationRequestSchema = z.object({
+  session_id: z.string().min(1).optional(),
+  workflow_id: z.string().min(1).optional(),
+  max_events: z.number().int().positive().max(200).optional(),
+  scope: graphScopeSchema.optional()
+});
+
+const embeddingBackfillRequestSchema = z.object({
+  dry_run: z.boolean().optional(),
+  limit: z.number().int().positive().max(1000).optional(),
+  scope: graphScopeSchema.optional()
+});
+
+const redactionRequestSchema = z.object({
+  node_ids: z.array(z.string().min(1)).min(1),
+  reason: z.string().min(1).optional(),
+  scope: graphScopeSchema.optional()
+});
+
+const agentDefinitionSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  model_profile: z.string().min(1).optional(),
+  context_budget: z.number().int().positive().optional(),
+  permissions: z.array(z.string().min(1)).optional(),
+  output_contract: z.record(z.string(), z.unknown()).optional(),
+  scope: graphScopeSchema.optional(),
+  metadata: z.record(z.string(), z.unknown()).optional()
+});
+
+const agentContextRequestSchema = composeContextRequestSchema.extend({
+  agent_id: z.string().min(1).optional()
+});
+
+const runStateRequestSchema = z.object({
+  from: z.enum(runStatuses).optional(),
+  to: z.enum(runStatuses)
+});
+
+const memoryWriteCandidateSchema = z.object({
+  node: graphNodeSchema,
+  operation: z.enum(["propose", "upsert"]).optional(),
+  evidence_node_ids: z.array(z.string().min(1)).optional()
+});
+
+const memoryWriteValidationRequestSchema = z.object({
+  candidates: z.array(memoryWriteCandidateSchema).default([])
+});
+
+interface GraphDeltaResponse {
+  accepted: true;
+  idempotency_key: string;
+  request_hash: string;
+  idempotent_replay: boolean;
+  profile_id?: string | undefined;
+  persistence: {
+    nodes: number;
+    edges: number;
+    chunks: number;
+    mode: string;
+  };
+  delta: {
+    upserted_neurons: number;
+    upserted_synapses: number;
+    temporal_updates: number;
+    archived: number;
+    fallback_synapse_types: string[];
+  };
+}
+
 export function createApp(): FastifyInstance {
   const app = Fastify({
     logger: process.env.NODE_ENV === "test" ? false : { level: process.env.LOG_LEVEL ?? "info" }
@@ -138,9 +269,27 @@ export function createApp(): FastifyInstance {
   const cache = createInMemoryCache();
   const traceStore = createApiTraceStore();
   const profileFeedback = createProfileFeedbackStore();
+  const agentRegistry = createAgentRegistryStore();
+  const graphProfiles = createGraphProfileRegistry();
+  const rateLimiter = createScopeRateLimiter();
 
   void app.register(cors, {
     origin: true
+  });
+
+  app.addHook("preHandler", async (request, reply) => {
+    const auth = authorizeRequest(request);
+    if (!auth.ok) {
+      return reply.status(401).send({ error: "unauthorized" });
+    }
+
+    const rateLimit = rateLimiter.consume(getRequestScope(request), request.url);
+    if (!rateLimit.ok) {
+      return reply.status(429).send({
+        error: "rate_limited",
+        reset_at: rateLimit.reset_at
+      });
+    }
   });
 
   registerTraceHooks(app, traceStore);
@@ -152,21 +301,13 @@ export function createApp(): FastifyInstance {
     time: new Date().toISOString()
   }));
 
-  app.get("/workbench/agents", async () => ({
-    agents: [
-      {
-        id: "main-agent",
-        name: "Main Agent",
-        status: "running",
-        task: "Phase 1 Memory Backbone",
-        model: "gpt-5",
-        token_budget: 8000,
-        cache_hit_rate: calculateCacheHitRate(cache.stats())
-      }
-    ]
+  app.get("/workbench/agents", async (request) => ({
+    agents: agentRegistry
+      .list(getRequestScope(request))
+      .map((agent) => toWorkbenchAgent(agent, calculateCacheHitRate(cache.stats())))
   }));
 
-  app.get("/workbench/graph/subgraph", async () => dataSource.getMemory());
+  app.get("/workbench/graph/subgraph", async (request) => dataSource.getMemory(getRequestScope(request)));
 
   app.get("/model/profiles", async () => ({
     profiles: listModelProfiles(),
@@ -174,9 +315,33 @@ export function createApp(): FastifyInstance {
     generated_at: new Date().toISOString()
   }));
 
+  app.get("/profiles", async () => ({
+    profiles: graphProfiles.list(),
+    generated_at: new Date().toISOString()
+  }));
+
+  app.get("/profiles/:id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const profile = graphProfiles.get(params.id);
+    if (!profile) {
+      return reply.status(404).send({ error: "profile_not_found", id: params.id });
+    }
+
+    return profile;
+  });
+
+  app.post("/profiles", async (request) => {
+    const profile = graphProfileSchema.parse(request.body);
+    return {
+      profile: graphProfiles.register(profile),
+      registered: true
+    };
+  });
+
   app.post("/model/route", async (request, reply) => {
     const body = modelRouteRequestSchema.parse(request.body ?? {});
-    const contextPack = body.context_pack_id ? await dataSource.getContextPack(body.context_pack_id) : undefined;
+    const scope = getRequestScope(request, body.scope);
+    const contextPack = body.context_pack_id ? await dataSource.getContextPack(body.context_pack_id, scope) : undefined;
 
     if (body.context_pack_id && !contextPack) {
       return reply.status(404).send({
@@ -205,17 +370,19 @@ export function createApp(): FastifyInstance {
 
   app.get("/workbench/runs/:id/trace", async (request) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const scope = getRequestScope(request);
     const storedSpans = await traceStore.listSpans(params.id);
-    if (storedSpans.length > 0) {
+    const scopedSpans = storedSpans.filter((span) => traceSpanMatchesScope(span, scope));
+    if (scopedSpans.length > 0) {
       return {
         run_id: params.id,
-        spans: storedSpans
+        spans: scopedSpans
       };
     }
 
     return {
       run_id: params.id,
-      spans: sampleTraceSpans
+      spans: sampleTraceSpans.filter((span) => traceSpanMatchesScope(span, scope))
     };
   });
 
@@ -225,9 +392,10 @@ export function createApp(): FastifyInstance {
         limit: z.coerce.number().int().positive().max(50).default(10)
       })
       .parse(request.query);
+    const scope = getRequestScope(request);
     const [contextPacks, handoffPacks] = await Promise.all([
-      dataSource.listContextPacks(query.limit),
-      dataSource.listHandoffPacks(query.limit)
+      dataSource.listContextPacks(query.limit, scope),
+      dataSource.listHandoffPacks(query.limit, scope)
     ]);
 
     return {
@@ -241,18 +409,19 @@ export function createApp(): FastifyInstance {
 
   app.get("/workbench/artifacts/handoffs/:id/relationship", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const handoffPack = await dataSource.getHandoffPack(params.id);
+    const scope = getRequestScope(request);
+    const handoffPack = await dataSource.getHandoffPack(params.id, scope);
 
     if (!handoffPack) {
       return reply.status(404).send({ error: "handoff_pack_not_found", id: params.id });
     }
 
     const contextPackId = getSourceContextPackId(handoffPack);
-    if (contextPackId && (await dataSource.getContextPack(contextPackId))) {
+    if (contextPackId && (await dataSource.getContextPack(contextPackId, scope))) {
       return toHandoffRelationship(contextPackId, handoffPack);
     }
 
-    const [relationship] = createHandoffRelationships(await dataSource.listContextPacks(50), [handoffPack]);
+    const [relationship] = createHandoffRelationships(await dataSource.listContextPacks(50, scope), [handoffPack]);
     if (!relationship) {
       return reply.status(404).send({ error: "handoff_relationship_not_found", id: params.id });
     }
@@ -267,12 +436,14 @@ export function createApp(): FastifyInstance {
         limit: z.coerce.number().int().positive().max(100).default(40)
       })
       .parse(request.query);
+    const scope = getRequestScope(request);
     const artifactLimit = Math.max(query.limit, 50);
     const [contextPacks, handoffPacks, spans] = await Promise.all([
-      dataSource.listContextPacks(artifactLimit),
-      dataSource.listHandoffPacks(artifactLimit),
+      dataSource.listContextPacks(artifactLimit, scope),
+      dataSource.listHandoffPacks(artifactLimit, scope),
       query.run_id ? traceStore.listSpans(query.run_id) : Promise.resolve(sampleTraceSpans)
     ]);
+    const scopedSpans = spans.filter((span) => traceSpanMatchesScope(span, scope));
     const relationships = createHandoffRelationships(contextPacks, handoffPacks);
 
     return {
@@ -281,7 +452,7 @@ export function createApp(): FastifyInstance {
         contextPacks,
         handoffPacks,
         relationships,
-        spans,
+        spans: scopedSpans,
         runId: query.run_id,
         limit: query.limit
       }),
@@ -296,7 +467,7 @@ export function createApp(): FastifyInstance {
 
   app.get("/graph/nodes/:id", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const node = await dataSource.getNode(params.id);
+    const node = await dataSource.getNode(params.id, getRequestScope(request));
 
     if (!node) {
       return reply.status(404).send({ error: "node_not_found" });
@@ -307,7 +478,8 @@ export function createApp(): FastifyInstance {
 
   app.get("/graph/nodes/:id/neighbors", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const memory = await dataSource.getMemory();
+    const scope = getRequestScope(request);
+    const memory = await dataSource.getMemory(scope);
     const node = memory.nodes.find((candidate) => candidate.id === params.id);
 
     if (!node) {
@@ -322,19 +494,135 @@ export function createApp(): FastifyInstance {
       memory,
       seedNodeIds: [params.id],
       hops: 1,
-      minConfidence: 0.4
+      minConfidence: 0.4,
+      scope
     });
+  });
+
+  app.post("/graph/deltas", async (request, reply) => {
+    const body = graphDeltaRequestSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
+    const scopedBody = applyRequestScope(body, scope);
+    const requestHash = createCacheKey({
+      layer: "graph_delta_request",
+      body: scopedBody
+    });
+    const existing = await dataSource.getGraphDeltaCommit(scopedBody.idempotency_key, scope);
+    if (existing) {
+      if (existing.request_hash !== requestHash) {
+        return reply.status(409).send({
+          error: "idempotency_key_conflict",
+          idempotency_key: scopedBody.idempotency_key
+        });
+      }
+
+      return {
+        ...(existing.response as unknown as GraphDeltaResponse),
+        idempotent_replay: true
+      };
+    }
+
+    const validation = graphProfiles.validateDelta(scopedBody);
+    if (!validation.ok) {
+      return reply.status(400).send({
+        error: "profile_validation_failed",
+        issues: validation.issues
+      });
+    }
+
+    const memory = await dataSource.getMemory(scope);
+    const compiled = compileGraphDelta(scopedBody, memory, scope);
+    const persistence = await dataSource.persistIngest(compiled, scope);
+    invalidateGraphCaches(cache);
+
+    const response: GraphDeltaResponse = {
+      accepted: true,
+      idempotency_key: scopedBody.idempotency_key,
+      request_hash: requestHash,
+      idempotent_replay: false,
+      ...(scopedBody.profile_id ? { profile_id: scopedBody.profile_id } : {}),
+      persistence,
+      delta: compiled.metadata
+    };
+    await dataSource.saveGraphDeltaCommit({
+      idempotency_key: scopedBody.idempotency_key,
+      request_hash: requestHash,
+      response: response as unknown as Record<string, unknown>,
+      ...(scopedBody.profile_id ? { profile_id: scopedBody.profile_id } : {}),
+      ...(scope ? { scope } : {}),
+      metadata: {
+        source: scopedBody.source ?? null,
+        committed_at: new Date().toISOString()
+      }
+    }, scope);
+
+    await runTracedSpan(traceStore, request, {
+      name: "Graph Delta Commit",
+      kind: "orchestration",
+      attributes: {
+        idempotencyKey: scopedBody.idempotency_key,
+        profileId: scopedBody.profile_id,
+        nodes: persistence.nodes,
+        edges: persistence.edges,
+        mode: persistence.mode,
+        ...(scope ? { scope } : {})
+      }
+    });
+
+    return response;
+  });
+
+  app.post("/graph/neurons/query", async (request) => {
+    const body = graphNeuronQueryRequestSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
+    const memory = await dataSource.getMemory(scope);
+    const result = queryGraphNeurons(applyRequestScope(body, scope), memory);
+
+    return {
+      ...result,
+      profile_id: body.profile_id,
+      mode: dataSource.mode
+    };
+  });
+
+  app.post("/graph/traverse", async (request) => {
+    const body = graphTraverseRequestSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
+    const memory = await dataSource.getMemory(scope);
+    const neighborhood = traverseGraph(applyRequestScope(body, scope), memory);
+
+    return {
+      ...neighborhood,
+      profile_id: body.profile_id,
+      mode: dataSource.mode,
+      synapse_types: [...new Set(neighborhood.edges.map(getSynapseType))].sort()
+    };
+  });
+
+  app.post("/graph/views/current", async (request) => {
+    const body = graphCurrentViewRequestSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
+    const memory = await dataSource.getMemory(scope);
+    const view = currentGraphView(applyRequestScope(body, scope), memory);
+
+    return {
+      ...view,
+      profile_id: body.profile_id,
+      mode: dataSource.mode
+    };
   });
 
   app.post("/graph/query", async (request) => {
     const body = graphQueryRequestSchema.parse(request.body);
-    const intent = classifyQueryIntent(body.query);
-    const expandHops = Math.min(2, Math.max(body.expand_hops, intent.suggested_hops));
+    const scope = getRequestScope(request, body.scope);
+    const scopedBody = applyRequestScope(body, scope);
+    const intent = classifyQueryIntent(scopedBody.query);
+    const expandHops = Math.min(2, Math.max(scopedBody.expand_hops, intent.suggested_hops));
     const cacheKey = createCacheKey({
       layer: "graph_query",
       dataMode: dataSource.mode,
       body: {
-        ...body,
+        ...scopedBody,
         expand_hops: expandHops,
         intent: intent.kind
       }
@@ -370,8 +658,8 @@ export function createApp(): FastifyInstance {
     }
 
     const [memory, vectorSeeds] = await Promise.all([
-      dataSource.getMemory(),
-      dataSource.searchVectorSeeds(body, Math.max(body.top_k * 2, 10))
+      dataSource.getMemory(scope),
+      dataSource.searchVectorSeeds(scopedBody, Math.max(scopedBody.top_k * 2, 10))
     ]);
     const semanticSeedHints = vectorSeeds.map(toSemanticSeedHint);
     const seeds = await runTracedSpan(
@@ -381,8 +669,8 @@ export function createApp(): FastifyInstance {
         name: "Seed Retrieval",
         kind: "retrieval",
         attributes: {
-          query: body.query,
-          topK: body.top_k,
+          query: scopedBody.query,
+          topK: scopedBody.top_k,
           mode: "hybrid",
           semanticSource: dataSource.mode === "database" ? "pgvector+local" : "local_sparse",
           vectorSeedCount: vectorSeeds.length,
@@ -390,7 +678,7 @@ export function createApp(): FastifyInstance {
           intentConfidence: intent.confidence
         }
       },
-      () => rankSeedNodes(body, memory.nodes, { intent, semanticSeedHints })
+      () => rankSeedNodes(scopedBody, memory.nodes, { intent, semanticSeedHints })
     );
     const neighborhood = await getCachedNeighborhood({
       cache,
@@ -400,10 +688,12 @@ export function createApp(): FastifyInstance {
       memory,
       seedNodeIds: seeds.map((seed) => seed.node.id),
       hops: expandHops,
-      minConfidence: body.min_edge_confidence,
+      minConfidence: scopedBody.min_edge_confidence,
       edgeTypeBoosts: edgeTypeIntentBoosts(intent),
+      scope,
       attributes: {
-        intent: intent.kind
+        intent: intent.kind,
+        ...(scope ? { scope } : {})
       }
     });
 
@@ -432,7 +722,13 @@ export function createApp(): FastifyInstance {
         key: cacheKey
       }
     }, {
-      tags: createCacheTags("graph", "retrieval", `intent:${intent.kind}`, `mode:${dataSource.mode}`)
+      tags: createCacheTags(
+        "graph",
+        "retrieval",
+        `intent:${intent.kind}`,
+        `mode:${dataSource.mode}`,
+        scope?.tenant_id ? `tenant:${scope.tenant_id}` : undefined
+      )
     });
 
     return response;
@@ -440,6 +736,7 @@ export function createApp(): FastifyInstance {
 
   app.post("/graph/link", async (request) => {
     const body = linkRequestSchema.parse(request.body);
+    const scope = getRequestScope(request);
     const edge: GraphEdge = {
       id: `edge_manual_${Date.now()}`,
       from: body.from,
@@ -448,13 +745,14 @@ export function createApp(): FastifyInstance {
       weight: body.weight,
       confidence: body.confidence,
       created_at: new Date().toISOString(),
+      ...(scope ? { scope } : {}),
       metadata: { source: "api" }
     };
     const persisted = await dataSource.persistIngest({
       nodes: [],
       edges: [edge],
       chunks: []
-    });
+    }, scope);
     invalidateGraphCaches(cache);
     return {
       edge,
@@ -464,14 +762,16 @@ export function createApp(): FastifyInstance {
 
   app.post("/context/compose", async (request) => {
     const body = composeContextRequestSchema.parse(request.body);
-    const template = selectContextTemplate(body);
+    const scope = getRequestScope(request, body.scope);
+    const scopedBody = applyRequestScope(body, scope);
+    const template = selectContextTemplate(scopedBody);
     const promptSegment = await getCachedPromptSegment({
       cache,
       traceStore,
       request,
       template
     });
-    const memory = await dataSource.getMemory();
+    const memory = await dataSource.getMemory(scope);
     const pack = await runTracedSpan(
       traceStore,
       request,
@@ -479,16 +779,17 @@ export function createApp(): FastifyInstance {
         name: "Context Pack Composition",
         kind: "context_pack",
         attributes: {
-          objective: body.objective,
-          query: body.query,
+          objective: scopedBody.objective,
+          query: scopedBody.query,
           templateId: template.id,
           promptSegmentCacheHit: promptSegment.cache.hit,
-          seedNodeCount: body.seed_node_ids.length,
-          tokenBudget: body.token_budget
+          seedNodeCount: scopedBody.seed_node_ids.length,
+          tokenBudget: scopedBody.token_budget,
+          ...(scope ? { scope } : {})
         }
       },
       () =>
-        composeContextPack(body, memory, {
+        composeContextPack(scopedBody, memory, {
           template,
           promptSegmentCache: promptSegment.cache
         })
@@ -499,14 +800,14 @@ export function createApp(): FastifyInstance {
       request,
       pack
     });
-    const saved = await dataSource.saveContextPack(withContextSummary(withRunMetadata(pack, request), summary));
+    const saved = await dataSource.saveContextPack(withContextSummary(withRunMetadata(pack, request), summary), scope);
     invalidateGraphCaches(cache);
     return saved;
   });
 
   app.get("/context/packs/:id", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const pack = await dataSource.getContextPack(params.id);
+    const pack = await dataSource.getContextPack(params.id, getRequestScope(request));
     if (!pack) {
       return reply.status(404).send({ error: "context_pack_not_found", id: params.id });
     }
@@ -516,7 +817,8 @@ export function createApp(): FastifyInstance {
   app.post("/context/packs/:id/refresh", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = refreshContextPackRequestSchema.parse(request.body ?? {});
-    const existing = await dataSource.getContextPack(params.id);
+    const scope = getRequestScope(request, body.scope);
+    const existing = await dataSource.getContextPack(params.id, scope);
 
     if (!existing) {
       return reply.status(404).send({ error: "context_pack_not_found", id: params.id });
@@ -527,7 +829,9 @@ export function createApp(): FastifyInstance {
       agent_id: existing.agent_id,
       session_id: existing.session_id,
       token_budget: body.token_budget ?? existing.token_budget,
-      seed_node_ids: body.seed_node_ids ?? existing.node_ids
+      seed_node_ids: body.seed_node_ids ?? existing.node_ids,
+      ...(body.activation_tags ? { activation_tags: body.activation_tags } : {}),
+      ...((existing.scope ?? scope) ? { scope: existing.scope ?? scope } : {})
     };
     const taskType = body.task_type ?? existing.template_id?.split(":")[0];
     if (taskType) {
@@ -542,7 +846,7 @@ export function createApp(): FastifyInstance {
       request,
       template
     });
-    const memory = await dataSource.getMemory();
+    const memory = await dataSource.getMemory(scope);
     const pack = await runTracedSpan(
       traceStore,
       request,
@@ -556,7 +860,8 @@ export function createApp(): FastifyInstance {
           templateId: template.id,
           promptSegmentCacheHit: promptSegment.cache.hit,
           seedNodeCount: input.seed_node_ids.length,
-          tokenBudget: input.token_budget
+          tokenBudget: input.token_budget,
+          ...(scope ? { scope } : {})
         }
       },
       () =>
@@ -571,7 +876,7 @@ export function createApp(): FastifyInstance {
       request,
       pack
     });
-    const saved = await dataSource.saveContextPack(withContextSummary(withRunMetadata(pack, request), summary));
+    const saved = await dataSource.saveContextPack(withContextSummary(withRunMetadata(pack, request), summary), scope);
     invalidateGraphCaches(cache);
 
     return {
@@ -582,7 +887,7 @@ export function createApp(): FastifyInstance {
 
   app.get("/context/handoffs/:id", async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const pack = await dataSource.getHandoffPack(params.id);
+    const pack = await dataSource.getHandoffPack(params.id, getRequestScope(request));
     if (!pack) {
       return reply.status(404).send({ error: "handoff_pack_not_found", id: params.id });
     }
@@ -591,7 +896,8 @@ export function createApp(): FastifyInstance {
 
   app.post("/context/handoff", async (request, reply) => {
     const body = handoffRequestSchema.parse(request.body);
-    const contextPack = body.context_pack_id ? await dataSource.getContextPack(body.context_pack_id) : undefined;
+    const scope = getRequestScope(request, body.scope);
+    const contextPack = body.context_pack_id ? await dataSource.getContextPack(body.context_pack_id, scope) : undefined;
 
     if (body.context_pack_id && !contextPack) {
       return reply.status(404).send({ error: "context_pack_not_found", id: body.context_pack_id });
@@ -636,43 +942,47 @@ export function createApp(): FastifyInstance {
       },
       () => createHandoffPack(input)
     );
-    const saved = await dataSource.saveHandoffPack(pack);
+    const saved = await dataSource.saveHandoffPack(pack, scope);
     invalidateGraphCaches(cache);
     return saved;
   });
 
   app.post("/ingest/document", async (request) => {
     const body = sourceDocumentSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
     const emission = ingestDocument(body);
-    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory());
-    const result = await dataSource.persistIngest(linkedEmission);
+    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory(scope));
+    const result = await dataSource.persistIngest(linkedEmission, scope);
     invalidateGraphCaches(cache);
     return result;
   });
 
   app.post("/ingest/repository", async (request) => {
     const body = repositorySnapshotSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
     const emission = ingestRepository(body);
-    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory());
-    const result = await dataSource.persistIngest(linkedEmission);
+    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory(scope));
+    const result = await dataSource.persistIngest(linkedEmission, scope);
     invalidateGraphCaches(cache);
     return result;
   });
 
   app.post("/ingest/ticket", async (request) => {
     const body = ticketSnapshotSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
     const emission = ingestTicket(body);
-    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory());
-    const result = await dataSource.persistIngest(linkedEmission);
+    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory(scope));
+    const result = await dataSource.persistIngest(linkedEmission, scope);
     invalidateGraphCaches(cache);
     return result;
   });
 
   app.post("/ingest/simulation-event", async (request) => {
     const body = simulationEventSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
     const emission = ingestSimulationEvent(body);
-    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory());
-    const result = await dataSource.persistIngest(linkedEmission);
+    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory(scope));
+    const result = await dataSource.persistIngest(linkedEmission, scope);
     invalidateGraphCaches(cache);
     return {
       ...result,
@@ -680,8 +990,102 @@ export function createApp(): FastifyInstance {
     };
   });
 
+  app.post("/content/modules", async (request) => {
+    const body = contentModuleRequestSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
+    const emission = ingestContentModule({
+      ...body,
+      ...(scope ? { scope } : {})
+    });
+    const linkedEmission = linkCrossSourceReferences(emission, await dataSource.getMemory(scope));
+    const result = await dataSource.persistIngest(linkedEmission, scope);
+    invalidateGraphCaches(cache);
+    return {
+      ...result,
+      node_id: contentModuleNodeId(body.id)
+    };
+  });
+
+  app.get("/content/modules/:id", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const node = await dataSource.getNode(contentModuleNodeId(params.id), getRequestScope(request));
+    if (!node || !isContentModuleNode(node)) {
+      return reply.status(404).send({ error: "content_module_not_found", id: params.id });
+    }
+
+    return node;
+  });
+
+  app.post("/content/modules/query", async (request) => {
+    const body = contentModuleQuerySchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
+    const memory = await dataSource.getMemory(scope);
+    const template = selectContextTemplate({
+      objective: `Retrieve content modules for ${body.query}`,
+      task_type: "content_module",
+      query: body.query
+    });
+    const pack = composeContextPack(
+      {
+        objective: `Retrieve content modules for ${body.query}`,
+        agent_id: "content-module-query",
+        session_id: "content-module-query",
+        task_type: "content_module",
+        token_budget: body.token_budget,
+        seed_node_ids: [],
+        query: body.query,
+        ...(body.activation_tags ? { activation_tags: body.activation_tags } : {}),
+        ...(scope ? { scope } : {})
+      },
+      memory,
+      {
+        template,
+        maxEvidenceItems: body.top_k
+      }
+    );
+    const moduleIds = new Set(memory.nodes.filter(isContentModuleNode).map((node) => node.id));
+
+    return {
+      modules: pack.node_ids.filter((nodeId) => moduleIds.has(nodeId)),
+      evidence: pack.evidence.filter((item) => moduleIds.has(item.node_id)),
+      explanations: pack.metadata.node_explanations,
+      content_modules: pack.metadata.content_modules,
+      scope,
+      mode: dataSource.mode
+    };
+  });
+
+  app.post("/memory/consolidate", async (request) => {
+    const body = memoryConsolidationRequestSchema.parse(request.body ?? {});
+    const scope = getRequestScope(request, body.scope);
+    const memory = await dataSource.getMemory(scope);
+    const consolidation = consolidateEventMemory({
+      memory,
+      ...(body.session_id ? { session_id: body.session_id } : {}),
+      ...(body.workflow_id ? { workflow_id: body.workflow_id } : {}),
+      ...(scope ? { scope } : {}),
+      ...(body.max_events ? { max_events: body.max_events } : {})
+    });
+    const emission = {
+      nodes: consolidation.nodes,
+      edges: consolidation.edges,
+      chunks: consolidation.nodes.map((node) => {
+        const content = [node.title, node.summary ?? ""].join("\n");
+        return chunkText(node.id, node.content_ref ?? node.id, content)[0]!;
+      })
+    };
+    const result = await dataSource.persistIngest(emission, scope);
+    invalidateGraphCaches(cache);
+    return {
+      ...result,
+      source_event_ids: consolidation.source_event_ids,
+      token_savings: consolidation.token_savings
+    };
+  });
+
   app.post("/simulation/context", async (request) => {
     const body = simulationContextRequestSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope);
     const sessionNodeId = simulationSessionNodeId(body.simulation_id, body.session_id);
     const targetSessionId = body.new_session_id ?? body.session_id;
     const objective =
@@ -705,7 +1109,7 @@ export function createApp(): FastifyInstance {
       request,
       template
     });
-    const memory = filterSimulationMemory(await dataSource.getMemory(), body.simulation_id, sessionNodeId);
+    const memory = filterSimulationMemory(await dataSource.getMemory(scope), body.simulation_id, sessionNodeId);
     const pack = await runTracedSpan(
       traceStore,
       request,
@@ -728,7 +1132,8 @@ export function createApp(): FastifyInstance {
             task_type: "handoff",
             token_budget: body.token_budget,
             seed_node_ids: [sessionNodeId],
-            query
+            query,
+            ...(scope ? { scope } : {})
           },
           memory,
           {
@@ -755,7 +1160,7 @@ export function createApp(): FastifyInstance {
       request,
       pack: continuityPack
     });
-    const saved = await dataSource.saveContextPack(withContextSummary(withRunMetadata(continuityPack, request), summary));
+    const saved = await dataSource.saveContextPack(withContextSummary(withRunMetadata(continuityPack, request), summary), scope);
     invalidateGraphCaches(cache);
 
     return {
@@ -764,6 +1169,35 @@ export function createApp(): FastifyInstance {
       target_session_id: targetSessionId,
       pack: saved,
       mode: dataSource.mode
+    };
+  });
+
+  app.get("/embeddings/health", async (request) => dataSource.getEmbeddingHealth(getRequestScope(request)));
+
+  app.post("/embeddings/backfill", async (request) => {
+    const body = embeddingBackfillRequestSchema.parse(request.body ?? {});
+    const scope = getRequestScope(request, body.scope);
+    return dataSource.backfillEmbeddings({
+      ...(body.dry_run !== undefined ? { dry_run: body.dry_run } : {}),
+      ...(body.limit !== undefined ? { limit: body.limit } : {}),
+      ...(scope ? { scope } : {})
+    });
+  });
+
+  app.post("/privacy/redactions", async (request) => {
+    const body = redactionRequestSchema.parse(request.body ?? {});
+    const scope = getRequestScope(request, body.scope);
+    const result = await dataSource.redactGraph({
+      node_ids: body.node_ids,
+      ...(body.reason ? { reason: body.reason } : {}),
+      ...(scope ? { scope } : {})
+    });
+    invalidateGraphCaches(cache);
+    cache.invalidate({ layer: "summary" });
+    cache.invalidate({ layer: "response" });
+    return {
+      redacted: result.nodes > 0,
+      ...result
     };
   });
 
@@ -830,15 +1264,73 @@ export function createApp(): FastifyInstance {
     };
   });
 
-  app.post("/agents", async (request) => ({
-    id: "main-agent",
-    ...(typeof request.body === "object" && request.body ? request.body : {})
+  app.get("/agents", async (request) => ({
+    agents: agentRegistry.list(getRequestScope(request))
   }));
+
+  app.post("/agents", async (request) => {
+    const body = agentDefinitionSchema.parse(request.body ?? {});
+    const scope = getRequestScope(request, body.scope);
+    const agent = agentRegistry.upsert({
+      id: body.id,
+      name: body.name ?? body.id,
+      role: body.role ?? "generalist",
+      model_profile: body.model_profile ?? "balanced-agent",
+      context_budget: body.context_budget ?? 8000,
+      permissions: body.permissions ?? ["read:graph", "write:proposed_memory"],
+      output_contract: body.output_contract ?? { format: "markdown", must_cite_node_ids: true },
+      ...(scope ? { scope } : {}),
+      metadata: body.metadata ?? {}
+    });
+
+    return agent;
+  });
+
+  app.post("/agents/:id/context", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const agent = agentRegistry.get(params.id);
+    if (!agent) {
+      return reply.status(404).send({ error: "agent_not_found", id: params.id });
+    }
+
+    const body = agentContextRequestSchema.parse(request.body);
+    const scope = getRequestScope(request, body.scope ?? agent.scope);
+    const contextRequest = toAgentContextRequest(agent, {
+      ...body,
+      ...(scope ? { scope } : {})
+    });
+    const template = selectContextTemplate(contextRequest);
+    const promptSegment = await getCachedPromptSegment({
+      cache,
+      traceStore,
+      request,
+      template
+    });
+    const memory = await dataSource.getMemory(scope);
+    const pack = composeContextPack(contextRequest, memory, {
+      template,
+      promptSegmentCache: promptSegment.cache
+    });
+    const summary = await getCachedContextSummary({
+      cache,
+      traceStore,
+      request,
+      pack
+    });
+    const saved = await dataSource.saveContextPack(withContextSummary(withRunMetadata(pack, request), summary), scope);
+
+    return {
+      agent,
+      pack: saved
+    };
+  });
 
   app.post("/agents/:id/run", async (request) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = agentRunRequestSchema.parse(request.body ?? {});
-    const contextPack = body.context_pack_id ? await dataSource.getContextPack(body.context_pack_id) : undefined;
+    const scope = getRequestScope(request, body.scope);
+    const agent = agentRegistry.get(params.id);
+    const contextPack = body.context_pack_id ? await dataSource.getContextPack(body.context_pack_id, scope) : undefined;
 
     if (body.context_pack_id && !contextPack) {
       return {
@@ -878,7 +1370,8 @@ export function createApp(): FastifyInstance {
       objective,
       response: response.value,
       cache: response.cache,
-      profile: profileDecision
+      profile: profileDecision,
+      registry: agent
     };
   });
 
@@ -887,6 +1380,27 @@ export function createApp(): FastifyInstance {
     return {
       agent_id: params.id,
       status: "running"
+    };
+  });
+
+  app.post("/agents/:id/runs/:runId/state", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1), runId: z.string().min(1) }).parse(request.params);
+    const body = runStateRequestSchema.parse(request.body ?? {});
+    const from = body.from ?? "planned";
+
+    if (!canTransitionRunStatus(from, body.to)) {
+      return reply.status(409).send({
+        error: "invalid_run_transition",
+        from,
+        to: body.to
+      });
+    }
+
+    return {
+      id: params.runId,
+      agent_id: params.id,
+      previous_status: from,
+      status: nextRunStatus(from, body.to)
     };
   });
 
@@ -900,11 +1414,194 @@ export function createApp(): FastifyInstance {
     };
   });
 
-  app.get("/agents/:id/runs/:runId/references", async () => ({
-    nodes: (await dataSource.getMemory()).nodes.filter((node: GraphNode) => node.importance_score >= 0.85)
+  app.get("/agents/:id/runs/:runId/references", async (request) => ({
+    nodes: (await dataSource.getMemory(getRequestScope(request))).nodes.filter((node: GraphNode) => node.importance_score >= 0.85)
   }));
 
+  app.post("/agents/:id/memory-writes/validate", async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const agent = agentRegistry.get(params.id);
+    if (!agent) {
+      return reply.status(404).send({ error: "agent_not_found", id: params.id });
+    }
+
+    const body = memoryWriteValidationRequestSchema.parse(request.body ?? {});
+    const scope = getRequestScope(request, agent.scope);
+    const memory = await dataSource.getMemory(scope);
+    const validation = validateMemoryWrites({
+      agent,
+      candidates: body.candidates as MemoryWriteCandidate[],
+      knownNodeIds: new Set(memory.nodes.map((node) => node.id))
+    });
+
+    return validation;
+  });
+
   return app;
+}
+
+function createAgentRegistryStore() {
+  const agents = new Map(createDefaultAgents().map((agent) => [agent.id, agent]));
+
+  return {
+    list(scope?: GraphScope | undefined): AgentDefinition[] {
+      return [...agents.values()].filter((agent) => scopeMatchesAgent(agent, scope)).map(cloneAgent);
+    },
+
+    get(id: string): AgentDefinition | undefined {
+      const agent = agents.get(id);
+      return agent ? cloneAgent(agent) : undefined;
+    },
+
+    upsert(agent: AgentDefinition): AgentDefinition {
+      agents.set(agent.id, cloneAgent(agent));
+      return cloneAgent(agent);
+    }
+  };
+}
+
+function toWorkbenchAgent(agent: AgentDefinition, cacheHitRate: number) {
+  return {
+    id: agent.id,
+    name: agent.name,
+    status: "running",
+    task: agent.role,
+    model: agent.model_profile,
+    token_budget: agent.context_budget,
+    permissions: agent.permissions,
+    output_contract: agent.output_contract,
+    cache_hit_rate: cacheHitRate,
+    metadata: agent.metadata
+  };
+}
+
+function cloneAgent(agent: AgentDefinition): AgentDefinition {
+  return {
+    ...agent,
+    permissions: [...agent.permissions],
+    output_contract: { ...agent.output_contract },
+    metadata: { ...agent.metadata }
+  };
+}
+
+function scopeMatchesAgent(agent: AgentDefinition, requestedScope: GraphScope | undefined): boolean {
+  if (!agent.scope) {
+    return true;
+  }
+
+  return scopeMatches(agent.scope, requestedScope);
+}
+
+function getRequestScope(request: FastifyRequest, bodyScope?: GraphScope | undefined): GraphScope | undefined {
+  return normalizeScope({
+    ...readScopeFromHeaders(request),
+    ...(bodyScope ?? readScopeFromBody(request.body))
+  });
+}
+
+function readScopeFromHeaders(request: FastifyRequest): GraphScope {
+  const scope: GraphScope = {};
+  const tenantId = readHeader(request, "x-neuralmap-tenant-id");
+  const workspaceId = readHeader(request, "x-neuralmap-workspace-id");
+  const projectId = readHeader(request, "x-neuralmap-project-id");
+  const ownerScope = readHeader(request, "x-neuralmap-owner-scope");
+
+  if (tenantId) {
+    scope.tenant_id = tenantId;
+  }
+  if (workspaceId) {
+    scope.workspace_id = workspaceId;
+  }
+  if (projectId) {
+    scope.project_id = projectId;
+  }
+  if (ownerScope) {
+    scope.owner_scope = ownerScope;
+  }
+
+  return scope;
+}
+
+function readScopeFromBody(body: unknown): GraphScope | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return undefined;
+  }
+
+  const parsed = graphScopeSchema.safeParse((body as Record<string, unknown>).scope);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function readHeader(request: FastifyRequest, name: string): string | undefined {
+  const value = request.headers[name];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function applyRequestScope<T extends { scope?: GraphScope | undefined }>(body: T, scope: GraphScope | undefined): T {
+  if (!scope) {
+    return body;
+  }
+
+  return {
+    ...body,
+    scope
+  };
+}
+
+function authorizeRequest(request: FastifyRequest): { ok: true } | { ok: false } {
+  const configuredKeys = (process.env.NEURALMAP_API_KEYS ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
+
+  if (configuredKeys.length === 0) {
+    return { ok: true };
+  }
+
+  const providedKey = readHeader(request, "x-neuralmap-api-key") ?? readBearerToken(request);
+  return configuredKeys.includes(providedKey ?? "") ? { ok: true } : { ok: false };
+}
+
+function readBearerToken(request: FastifyRequest): string | undefined {
+  const authorization = readHeader(request, "authorization");
+  const match = authorization?.match(/^Bearer\s+(.+)$/iu);
+  return match?.[1];
+}
+
+function createScopeRateLimiter() {
+  const limit = Number(process.env.NEURALMAP_RATE_LIMIT_PER_MINUTE ?? 0);
+  const buckets = new Map<string, { count: number; resetAt: number }>();
+
+  return {
+    consume(scope: GraphScope | undefined, route: string): { ok: true } | { ok: false; reset_at: string } {
+      if (!Number.isFinite(limit) || limit <= 0) {
+        return { ok: true };
+      }
+
+      const now = Date.now();
+      const key = createCacheKey({ route: route.split("?")[0], scope: scope ?? "global" });
+      const existing = buckets.get(key);
+      const bucket = existing && existing.resetAt > now ? existing : { count: 0, resetAt: now + 60_000 };
+      bucket.count += 1;
+      buckets.set(key, bucket);
+
+      if (bucket.count > limit) {
+        return { ok: false, reset_at: new Date(bucket.resetAt).toISOString() };
+      }
+
+      return { ok: true };
+    }
+  };
+}
+
+function traceSpanMatchesScope(span: TraceSpan, scope: GraphScope | undefined): boolean {
+  const spanScope = graphScopeSchema.safeParse(span.scope ?? span.attributes.scope).success
+    ? graphScopeSchema.parse(span.scope ?? span.attributes.scope)
+    : undefined;
+  return scopeMatches(spanScope, scope);
 }
 
 function createModelRouteDecision(input: {
@@ -1041,6 +1738,7 @@ interface CachedNeighborhoodInput {
   hops: number;
   minConfidence: number;
   edgeTypeBoosts?: Partial<Record<GraphEdge["type"], number>>;
+  scope?: GraphScope | undefined;
   attributes?: Record<string, unknown>;
 }
 
@@ -1579,13 +2277,16 @@ function toSpanTimelineEvent(span: TraceSpan): TimelineEvent {
 }
 
 function withRunMetadata<T extends { metadata: Record<string, unknown> }>(pack: T, request: FastifyRequest): T {
+  const scope = getRequestScope(request);
   return {
     ...pack,
+    ...(scope ? { scope } : {}),
     metadata: {
       ...pack.metadata,
-      source_run_id: getRequestRunId(request)
+      source_run_id: getRequestRunId(request),
+      ...(scope ? { scope } : {})
     }
-  };
+  } as T;
 }
 
 function getRequestRunId(request: FastifyRequest): string {
@@ -1674,7 +2375,8 @@ async function getCachedNeighborhood(input: CachedNeighborhoodInput): Promise<Gr
     seedNodeIds: input.seedNodeIds,
     hops: input.hops,
     minConfidence: input.minConfidence,
-    edgeTypeBoosts: input.edgeTypeBoosts ?? {}
+    edgeTypeBoosts: input.edgeTypeBoosts ?? {},
+    scope: input.scope
   });
   const cached = input.cache.get<GraphNeighborhood>("graph_neighborhood", key);
 
@@ -1685,6 +2387,7 @@ async function getCachedNeighborhood(input: CachedNeighborhoodInput): Promise<Gr
       layer: "graph_neighborhood",
       key,
       hit: cached.hit,
+      ...(input.scope ? { scope: input.scope } : {}),
       ...(input.attributes ?? {})
     }
   });
@@ -1703,6 +2406,7 @@ async function getCachedNeighborhood(input: CachedNeighborhoodInput): Promise<Gr
         seedCount: input.seedNodeIds.length,
         hops: input.hops,
         minEdgeConfidence: input.minConfidence,
+        ...(input.scope ? { scope: input.scope } : {}),
         ...(input.attributes ?? {})
       }
     },
@@ -1715,6 +2419,7 @@ async function getCachedNeighborhood(input: CachedNeighborhoodInput): Promise<Gr
       "graph",
       "neighborhood",
       `mode:${input.dataMode}`,
+      input.scope?.tenant_id ? `tenant:${input.scope.tenant_id}` : undefined,
       ...input.seedNodeIds.map((nodeId) => `node:${nodeId}`)
     )
   });
@@ -1792,6 +2497,13 @@ async function runTracedSpan<T>(
   if (input.attributes) {
     traceInput.attributes = input.attributes;
   }
+  const scope = getRequestScope(request);
+  if (scope) {
+    traceInput.attributes = {
+      ...(traceInput.attributes ?? {}),
+      scope
+    };
+  }
 
   const span = startTraceSpan(traceStore, traceInput);
 
@@ -1813,6 +2525,7 @@ const sourceDocumentSchema = z.object({
   title: z.string().min(1),
   uri: z.string().min(1),
   body: z.string().min(1),
+  scope: graphScopeSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional()
 });
 
@@ -1827,6 +2540,7 @@ const repositorySnapshotSchema = z.object({
   id: z.string().min(1),
   root: z.string().min(1),
   files: z.array(repositoryFileSchema),
+  scope: graphScopeSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional()
 });
 
@@ -1838,6 +2552,7 @@ const ticketSnapshotSchema = z.object({
   status: z.string().min(1),
   labels: z.array(z.string()).optional(),
   comments: z.array(z.string()).optional(),
+  scope: graphScopeSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional()
 });
 
@@ -1861,6 +2576,7 @@ const simulationEventSchema = z.object({
       })
     )
     .optional(),
+  scope: graphScopeSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional()
 });
 
@@ -1871,5 +2587,6 @@ const simulationContextRequestSchema = z.object({
   agent_id: z.string().min(1).default("simulation-agent"),
   objective: z.string().min(1).optional(),
   query: z.string().min(1).optional(),
-  token_budget: z.number().int().positive().default(4000)
+  token_budget: z.number().int().positive().default(4000),
+  scope: graphScopeSchema.optional()
 });

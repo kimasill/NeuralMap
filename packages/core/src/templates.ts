@@ -173,6 +173,19 @@ const contextTemplates: ContextTemplate[] = [
     ]
   },
   {
+    id: "content_module:default",
+    kind: "content_module",
+    version: 1,
+    name: "Content Module Retrieval",
+    description: "Select reusable, versioned content modules by scope, activation tags, and evidence quality.",
+    slots: ["goal", "activation_tags", "included_modules", "evidence", "version_notes", "excluded_modules"],
+    quality_bar: defaultQualityBar,
+    prompt_segments: [
+      "Prefer enabled active modules with matching activation tags and higher priority.",
+      "Keep product-specific interpretation outside the framework and cite module node IDs."
+    ]
+  },
+  {
     id: "general_recall:default",
     kind: "general_recall",
     version: 1,

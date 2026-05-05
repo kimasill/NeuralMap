@@ -167,12 +167,29 @@ async function runSmoke(db: ReturnType<typeof createDbClient>["db"]): Promise<Re
 
   await store.saveContextPack(contextPack);
   await store.saveHandoffPack(handoffPack);
+  await store.saveGraphDeltaCommit({
+    idempotency_key: "smoke:phase1:graph-delta:v1",
+    request_hash: "smoke-request-hash",
+    profile_id: "simulation-memory",
+    response: {
+      accepted: true,
+      idempotency_key: "smoke:phase1:graph-delta:v1",
+      request_hash: "smoke-request-hash"
+    },
+    scope: {
+      tenant_id: "smoke"
+    },
+    metadata: {
+      smoke: true
+    }
+  });
   await persistTraceSpan(db, span);
 
-  const [memory, loadedContextPack, loadedHandoffPack, spans] = await Promise.all([
+  const [memory, loadedContextPack, loadedHandoffPack, loadedGraphDeltaCommit, spans] = await Promise.all([
     store.getMemory(),
     store.getContextPack(contextPack.id),
     store.getHandoffPack(handoffPack.id),
+    store.getGraphDeltaCommit("smoke:phase1:graph-delta:v1"),
     traceStore.listSpans(runId)
   ]);
   const vectorSeeds = await store.searchVectorSeeds(
@@ -190,6 +207,8 @@ async function runSmoke(db: ReturnType<typeof createDbClient>["db"]): Promise<Re
   assert(nodeIds.has(contextNode.id), "context smoke node was not loaded from DB");
   assert(Boolean(loadedContextPack), "context pack was not loaded from DB");
   assert(Boolean(loadedHandoffPack), "handoff pack was not loaded from DB");
+  assert(Boolean(loadedGraphDeltaCommit), "graph delta commit was not loaded from DB");
+  assert(loadedGraphDeltaCommit?.request_hash === "smoke-request-hash", "graph delta commit request hash did not round-trip");
   assert(spans.some((candidate) => candidate.id === span.id), "trace span was not loaded from DB");
   assert(vectorSeeds.some((candidate) => candidate.node.id === contextNode.id), "pgvector seed search did not return smoke context node");
 
@@ -200,6 +219,7 @@ async function runSmoke(db: ReturnType<typeof createDbClient>["db"]): Promise<Re
     graph_nodes_loaded: memory.nodes.length,
     context_pack_id: loadedContextPack?.id,
     handoff_pack_id: loadedHandoffPack?.id,
+    graph_delta_commit_id: loadedGraphDeltaCommit?.idempotency_key,
     trace_spans_loaded: spans.length,
     vector_seed_count: vectorSeeds.length,
     vector_seed_sources: [...new Set(vectorSeeds.map((candidate) => candidate.source))]

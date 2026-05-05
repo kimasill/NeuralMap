@@ -3,6 +3,7 @@ import type { InferInsertModel, InferSelectModel } from "drizzle-orm";
 import type {
   contentChunks,
   contextPacks,
+  graphDeltaCommits,
   graphEdges,
   graphNodes,
   handoffPacks,
@@ -15,6 +16,9 @@ export type NewGraphNodeRow = InferInsertModel<typeof graphNodes>;
 
 export type GraphEdgeRow = InferSelectModel<typeof graphEdges>;
 export type NewGraphEdgeRow = InferInsertModel<typeof graphEdges>;
+
+export type GraphDeltaCommitRow = InferSelectModel<typeof graphDeltaCommits>;
+export type NewGraphDeltaCommitRow = InferInsertModel<typeof graphDeltaCommits>;
 
 export type ContentChunkRow = InferSelectModel<typeof contentChunks>;
 export type NewContentChunkRow = InferInsertModel<typeof contentChunks>;
@@ -30,4 +34,3 @@ export type NewTraceRunRow = InferInsertModel<typeof traceRuns>;
 
 export type TraceSpanRow = InferSelectModel<typeof traceSpans>;
 export type NewTraceSpanRow = InferInsertModel<typeof traceSpans>;
-

@@ -1,6 +1,7 @@
 export * from "./types.js";
 export * from "./artifact.js";
 export * from "./chunking.js";
+export * from "./content-module.js";
 export * from "./cross-source-linker.js";
 export * from "./document.js";
 export * from "./repository.js";

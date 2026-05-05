@@ -1,9 +1,10 @@
 import type { GraphNode } from "@neuralmap/schema";
 
 import type { PersistedContentChunk } from "./graph-store.js";
+import { createEmbeddingProviderConfig, storageEmbeddingDimensions } from "./embedding-provider.js";
 
-export const deterministicEmbeddingModel = "deterministic-sparse-hash-v1";
-export const embeddingDimensions = 1536;
+export const deterministicEmbeddingModel = createEmbeddingProviderConfig().model;
+export const embeddingDimensions = storageEmbeddingDimensions;
 
 const TOKEN_PATTERN = /[\p{L}\p{N}_./-]+/gu;
 
@@ -42,6 +43,10 @@ export function createGraphNodeEmbedding(node: GraphNode): number[] {
       node.summary ?? "",
       node.content_ref ?? "",
       node.source_system ?? "",
+      ...(node.labels ?? []),
+      node.ontology?.profile_id ?? "",
+      node.ontology?.type ?? "",
+      JSON.stringify(node.properties ?? {}),
       JSON.stringify(node.metadata)
     ].join(" ")
   );

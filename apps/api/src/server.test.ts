@@ -695,6 +695,653 @@ describe("api server", () => {
     }
   });
 
+  it("accepts profile-backed graph deltas, current views, and sectioned context without core enum expansion", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      const profiles = await app.inject({
+        method: "GET",
+        url: "/profiles"
+      });
+
+      expect(profiles.statusCode).toBe(200);
+      expect(profiles.json().profiles).toContainEqual(
+        expect.objectContaining({
+          id: "simulation-memory"
+        })
+      );
+      expect(profiles.json().profiles).toContainEqual(
+        expect.objectContaining({
+          id: "coding-context"
+        })
+      );
+
+      const invalid = await app.inject({
+        method: "POST",
+        url: "/graph/deltas",
+        payload: {
+          idempotency_key: "bad-character:v1",
+          profile_id: "simulation-memory",
+          upsert_neurons: [
+            {
+              id: "char:missing-name",
+              labels: ["Character"],
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "Character"
+              },
+              title: "Missing name",
+              properties: {}
+            }
+          ]
+        }
+      });
+
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.json()).toMatchObject({
+        error: "profile_validation_failed"
+      });
+
+      const firstDelta = await app.inject({
+        method: "POST",
+        url: "/graph/deltas",
+        payload: {
+          idempotency_key: "sim-memory:turn-1:v1",
+          profile_id: "simulation-memory",
+          source: {
+            system: "dynamicchat",
+            run_id: "run-1",
+            turn_id: "turn-1"
+          },
+          upsert_neurons: [
+            {
+              id: "char:mina",
+              labels: ["Character"],
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "Character"
+              },
+              title: "Mina",
+              summary: "Mina participates in the scene.",
+              properties: {
+                name: "Mina"
+              }
+            },
+            {
+              id: "state:mina:wearing:t1",
+              labels: ["State", "TemporalFact"],
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "State"
+              },
+              title: "Mina wearing state",
+              summary: "Mina is wearing an old hoodie.",
+              valid_from: "turn-1",
+              valid_to: null,
+              properties: {
+                owner_id: "char:mina",
+                state_type: "Wearing",
+                value: "old hoodie"
+              }
+            }
+          ],
+          upsert_synapses: [
+            {
+              from: "char:mina",
+              to: "state:mina:wearing:t1",
+              type: "HAS_CURRENT_STATE",
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "HAS_CURRENT_STATE"
+              },
+              properties: {
+                current_pointer_key: "char:mina:Wearing"
+              }
+            }
+          ]
+        }
+      });
+
+      expect(firstDelta.statusCode).toBe(200);
+      expect(firstDelta.json()).toMatchObject({
+        accepted: true,
+        idempotent_replay: false,
+        profile_id: "simulation-memory",
+        persistence: {
+          nodes: 2,
+          mode: "sample"
+        }
+      });
+
+      const secondPayload = {
+        idempotency_key: "sim-memory:turn-2:v1",
+        profile_id: "simulation-memory",
+        source: {
+          system: "dynamicchat",
+          run_id: "run-1",
+          turn_id: "turn-2"
+        },
+        upsert_neurons: [
+          {
+            id: "state:mina:wearing:t2",
+            labels: ["State", "TemporalFact"],
+            ontology: {
+              profile_id: "simulation-memory",
+              type: "State"
+            },
+            title: "Mina wearing state",
+            summary: "Mina is wearing a navy coat.",
+            valid_from: "turn-2",
+            valid_to: null,
+            properties: {
+              owner_id: "char:mina",
+              state_type: "Wearing",
+              value: "navy coat"
+            }
+          }
+        ],
+        upsert_synapses: [
+          {
+            from: "char:mina",
+            to: "state:mina:wearing:t2",
+            type: "HAS_CURRENT_STATE",
+            ontology: {
+              profile_id: "simulation-memory",
+              type: "HAS_CURRENT_STATE"
+            },
+            properties: {
+              current_pointer_key: "char:mina:Wearing"
+            }
+          }
+        ],
+        temporal_operations: [
+          {
+            operation: "supersede_current",
+            selector: {
+              label: "State",
+              properties: {
+                owner_id: "char:mina",
+                state_type: "Wearing"
+              }
+            },
+            valid_to: "turn-2",
+            superseded_by: "state:mina:wearing:t2"
+          }
+        ]
+      };
+
+      const secondDelta = await app.inject({
+        method: "POST",
+        url: "/graph/deltas",
+        payload: secondPayload
+      });
+      const secondReplay = await app.inject({
+        method: "POST",
+        url: "/graph/deltas",
+        payload: secondPayload
+      });
+      const secondConflict = await app.inject({
+        method: "POST",
+        url: "/graph/deltas",
+        payload: {
+          ...secondPayload,
+          upsert_neurons: [
+            {
+              id: "state:mina:wearing:t2-conflict",
+              labels: ["State", "TemporalFact"],
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "State"
+              },
+              title: "Conflicting wearing state",
+              summary: "This conflicting replay should be rejected.",
+              valid_from: "turn-2",
+              valid_to: null,
+              properties: {
+                owner_id: "char:mina",
+                state_type: "Wearing",
+                value: "red coat"
+              }
+            }
+          ]
+        }
+      });
+
+      expect(secondDelta.statusCode).toBe(200);
+      expect(secondDelta.json()).toMatchObject({
+        accepted: true,
+        idempotent_replay: false,
+        request_hash: expect.any(String),
+        delta: {
+          temporal_updates: 1
+        }
+      });
+      expect(secondReplay.json()).toMatchObject({
+        accepted: true,
+        idempotent_replay: true
+      });
+      expect(secondConflict.statusCode).toBe(409);
+      expect(secondConflict.json()).toMatchObject({
+        error: "idempotency_key_conflict"
+      });
+
+      const oldState = await app.inject({
+        method: "GET",
+        url: "/graph/nodes/state:mina:wearing:t1"
+      });
+      const currentView = await app.inject({
+        method: "POST",
+        url: "/graph/views/current",
+        payload: {
+          profile_id: "simulation-memory",
+          label: "State",
+          current_key: ["properties.owner_id", "properties.state_type"],
+          filters: {
+            owner_id: "char:mina"
+          }
+        }
+      });
+      const neuronQuery = await app.inject({
+        method: "POST",
+        url: "/graph/neurons/query",
+        payload: {
+          profile_id: "simulation-memory",
+          labels: ["State"],
+          query: "navy coat",
+          top_k: 5
+        }
+      });
+      const context = await app.inject({
+        method: "POST",
+        url: "/context/compose",
+        payload: {
+          objective: "Continue the simulation scene",
+          agent_id: "simulation-agent",
+          session_id: "scene-1",
+          profile_id: "simulation-memory",
+          query: "Mina wearing navy coat",
+          token_budget: 1200,
+          context_policy: {
+            sections: ["canonical_state", "relevant_history"]
+          }
+        }
+      });
+
+      expect(oldState.json()).toMatchObject({
+        id: "state:mina:wearing:t1",
+        valid_to: "turn-2"
+      });
+      expect(currentView.json().items).toEqual([
+        expect.objectContaining({
+          id: "state:mina:wearing:t2",
+          current_key: "char:mina:Wearing",
+          properties: expect.objectContaining({
+            value: "navy coat"
+          })
+        })
+      ]);
+      expect(neuronQuery.json().nodes.map((node: { id: string }) => node.id)).toContain("state:mina:wearing:t2");
+      expect(context.json()).toMatchObject({
+        metadata: {
+          profile_id: "simulation-memory",
+          context_policy: {
+            sections: ["canonical_state", "relevant_history"]
+          }
+        },
+        sections: {
+          canonical_state: expect.arrayContaining([
+            expect.objectContaining({
+              node_id: "state:mina:wearing:t2"
+            })
+          ])
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("stores activation-aware content modules and keeps tenant scopes isolated", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      const tenantAHeaders = { "x-neuralmap-tenant-id": "tenant-a" };
+      const tenantBHeaders = { "x-neuralmap-tenant-id": "tenant-b" };
+
+      await app.inject({
+        method: "POST",
+        url: "/content/modules",
+        headers: tenantAHeaders,
+        payload: {
+          id: "tutor-guide",
+          title: "Tutor Guide",
+          body: "Use patient tutoring examples for step-by-step learner support.",
+          activation_tags: ["tutoring"],
+          priority: 0.95
+        }
+      });
+      await app.inject({
+        method: "POST",
+        url: "/content/modules",
+        headers: tenantAHeaders,
+        payload: {
+          id: "disabled-guide",
+          title: "Disabled Tutor Guide",
+          body: "This disabled guide should not be selected.",
+          activation_tags: ["tutoring"],
+          enabled: false,
+          priority: 1
+        }
+      });
+      await app.inject({
+        method: "POST",
+        url: "/content/modules",
+        headers: tenantBHeaders,
+        payload: {
+          id: "tenant-b-guide",
+          title: "Tenant B Guide",
+          body: "Tenant B tutoring material must not leak to tenant A.",
+          activation_tags: ["tutoring"],
+          priority: 0.99
+        }
+      });
+
+      const query = await app.inject({
+        method: "POST",
+        url: "/content/modules/query",
+        headers: tenantAHeaders,
+        payload: {
+          query: "patient tutoring examples",
+          activation_tags: ["tutoring"]
+        }
+      });
+
+      expect(query.statusCode).toBe(200);
+      expect(query.json().modules).toContain("module:tutor-guide");
+      expect(query.json().modules).not.toContain("module:disabled-guide");
+      expect(query.json().modules).not.toContain("module:tenant-b-guide");
+      expect(query.json().content_modules).toContainEqual(
+        expect.objectContaining({
+          module_id: "tutor-guide",
+          activation_score: 1
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("enforces scoped graph retrieval and redaction across cache-backed queries", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/ingest/ticket",
+        headers: { "x-neuralmap-tenant-id": "tenant-a" },
+        payload: {
+          id: "TENANT-A",
+          title: "Tenant A secret",
+          url: "linear://TENANT-A",
+          body: "Tenant A retrieval should include the sapphire marker.",
+          status: "open"
+        }
+      });
+      await app.inject({
+        method: "POST",
+        url: "/ingest/ticket",
+        headers: { "x-neuralmap-tenant-id": "tenant-b" },
+        payload: {
+          id: "TENANT-B",
+          title: "Tenant B secret",
+          url: "linear://TENANT-B",
+          body: "Tenant B retrieval should include the copper marker.",
+          status: "open"
+        }
+      });
+
+      const tenantAQuery = await app.inject({
+        method: "POST",
+        url: "/graph/query",
+        headers: { "x-neuralmap-tenant-id": "tenant-a" },
+        payload: {
+          query: "sapphire marker",
+          top_k: 5,
+          expand_hops: 1,
+          min_edge_confidence: 0.4
+        }
+      });
+      const tenantBQuery = await app.inject({
+        method: "POST",
+        url: "/graph/query",
+        headers: { "x-neuralmap-tenant-id": "tenant-b" },
+        payload: {
+          query: "marker",
+          top_k: 5,
+          expand_hops: 1,
+          min_edge_confidence: 0.4
+        }
+      });
+
+      expect(tenantAQuery.json().neighborhood.nodes.map((node: { id: string }) => node.id)).toContain("ticket:TENANT-A");
+      expect(tenantAQuery.json().neighborhood.nodes.map((node: { id: string }) => node.id)).not.toContain(
+        "ticket:TENANT-B"
+      );
+      expect(tenantBQuery.json().neighborhood.nodes.map((node: { id: string }) => node.id)).toContain("ticket:TENANT-B");
+
+      const redaction = await app.inject({
+        method: "POST",
+        url: "/privacy/redactions",
+        headers: { "x-neuralmap-tenant-id": "tenant-a" },
+        payload: {
+          node_ids: ["ticket:TENANT-A"],
+          reason: "tenant requested deletion"
+        }
+      });
+      const afterRedaction = await app.inject({
+        method: "POST",
+        url: "/graph/query",
+        headers: { "x-neuralmap-tenant-id": "tenant-a" },
+        payload: {
+          query: "sapphire marker",
+          top_k: 5,
+          expand_hops: 1,
+          min_edge_confidence: 0.4
+        }
+      });
+
+      expect(redaction.json()).toMatchObject({
+        redacted: true,
+        nodes: 1
+      });
+      expect(afterRedaction.json().neighborhood.nodes.map((node: { id: string }) => node.id)).not.toContain(
+        "ticket:TENANT-A"
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("consolidates event memories into compact context with evidence links", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/ingest/simulation-event",
+        payload: {
+          simulation_id: "workflow",
+          session_id: "session-c",
+          event_id: "event-1",
+          content: "The operator decided to keep the blue deployment path. The team must verify rollback.",
+          importance: 0.94
+        }
+      });
+      await app.inject({
+        method: "POST",
+        url: "/ingest/simulation-event",
+        payload: {
+          simulation_id: "workflow",
+          session_id: "session-c",
+          event_id: "event-2",
+          content: "The operator confirmed the blue deployment path is active now.",
+          importance: 0.88
+        }
+      });
+
+      const consolidation = await app.inject({
+        method: "POST",
+        url: "/memory/consolidate",
+        payload: {
+          session_id: "session-c"
+        }
+      });
+      const context = await app.inject({
+        method: "POST",
+        url: "/context/compose",
+        payload: {
+          objective: "Resume deployment workflow",
+          agent_id: "ops-agent",
+          session_id: "session-d",
+          query: "blue deployment rollback",
+          token_budget: 1200
+        }
+      });
+
+      expect(consolidation.statusCode).toBe(200);
+      expect(consolidation.json().source_event_ids).toEqual(
+        expect.arrayContaining(["simulation:workflow:event:event-1", "simulation:workflow:event:event-2"])
+      );
+      expect(consolidation.json().token_savings.raw_tokens_estimate).toBeGreaterThan(0);
+      expect(context.json().node_ids.some((nodeId: string) => nodeId.includes("summary:session-c:rolling"))).toBe(true);
+      expect(context.json().node_ids).not.toContain("simulation:workflow:event:event-1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("registers agents, composes per-agent context, validates writes, and exposes embedding backfill controls", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      const agent = await app.inject({
+        method: "POST",
+        url: "/agents",
+        payload: {
+          id: "docs-agent",
+          role: "documentation",
+          model_profile: "fast-context",
+          context_budget: 900,
+          permissions: ["read:graph", "write:proposed_memory"],
+          output_contract: {
+            format: "markdown"
+          }
+        }
+      });
+      const context = await app.inject({
+        method: "POST",
+        url: "/agents/docs-agent/context",
+        payload: {
+          objective: "Document the context contract",
+          session_id: "agent-session",
+          query: "Context Pack",
+          token_budget: 5000
+        }
+      });
+      const validation = await app.inject({
+        method: "POST",
+        url: "/agents/docs-agent/memory-writes/validate",
+        payload: {
+          candidates: [
+            {
+              node: {
+                id: "memory:docs-agent:validated",
+                type: "Summary",
+                title: "Validated docs memory",
+                summary: "Context Pack docs should cite source node evidence.",
+                source_system: "runtime",
+                trust_score: 0.8,
+                freshness_score: 1,
+                importance_score: 0.7,
+                created_at: "2026-05-04T00:00:00.000Z",
+                updated_at: "2026-05-04T00:00:00.000Z",
+                metadata: {
+                  evidence_node_ids: ["node_context_pack_contract"]
+                }
+              },
+              evidence_node_ids: ["node_context_pack_contract"]
+            }
+          ]
+        }
+      });
+      const transition = await app.inject({
+        method: "POST",
+        url: "/agents/docs-agent/runs/run-1/state",
+        payload: {
+          from: "planned",
+          to: "running"
+        }
+      });
+      const health = await app.inject({
+        method: "GET",
+        url: "/embeddings/health"
+      });
+      const backfill = await app.inject({
+        method: "POST",
+        url: "/embeddings/backfill",
+        payload: {
+          dry_run: true,
+          limit: 5
+        }
+      });
+
+      expect(agent.json()).toMatchObject({
+        id: "docs-agent",
+        context_budget: 900
+      });
+      expect(context.json()).toMatchObject({
+        pack: {
+          agent_id: "docs-agent",
+          token_budget: 900
+        }
+      });
+      expect(validation.json()).toMatchObject({
+        accepted: [
+          expect.objectContaining({
+            node: expect.objectContaining({
+              id: "memory:docs-agent:validated"
+            })
+          })
+        ],
+        rejected: []
+      });
+      expect(transition.json()).toMatchObject({
+        previous_status: "planned",
+        status: "running"
+      });
+      expect(health.json()).toMatchObject({
+        provider: {
+          model: expect.any(String)
+        },
+        nodes: {
+          total: expect.any(Number),
+          coverage: expect.any(Number)
+        }
+      });
+      expect(backfill.json()).toMatchObject({
+        dry_run: true,
+        validated: true
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("creates handoff packs from saved context packs and records domain spans", async () => {
     const app = createApp();
     await app.ready();

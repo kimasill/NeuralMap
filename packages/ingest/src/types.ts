@@ -1,4 +1,4 @@
-import type { GraphEdge, GraphNode } from "@neuralmap/schema";
+import type { GraphEdge, GraphNode, GraphScope } from "@neuralmap/schema";
 
 export interface ContentChunkDraft {
   id: string;
@@ -65,5 +65,23 @@ export interface SimulationEventSnapshot {
     name?: string | undefined;
     role?: string | undefined;
   }> | undefined;
+  metadata?: Record<string, unknown> | undefined;
+}
+
+export interface ContentModuleSnapshot {
+  id: string;
+  title: string;
+  body: string;
+  module_kind?: "document" | "template" | "policy" | "snippet" | "guide" | "reference" | undefined;
+  parent_module_id?: string | undefined;
+  enabled?: boolean | undefined;
+  priority?: number | undefined;
+  order?: number | undefined;
+  activation_tags?: string[] | undefined;
+  owner_scope?: string | undefined;
+  version?: string | undefined;
+  source_uri?: string | undefined;
+  lifecycle_status?: "draft" | "active" | "deprecated" | "archived" | undefined;
+  scope?: GraphScope | undefined;
   metadata?: Record<string, unknown> | undefined;
 }
