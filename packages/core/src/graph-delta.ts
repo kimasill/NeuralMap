@@ -456,6 +456,7 @@ function matchesNeuronQuery(node: GraphNode, input: GraphNeuronQueryRequest): bo
   return (
     scopeMatches(node.scope ?? readScopeFromMetadata(node.metadata), input.scope) &&
     isLifecycleActive(node) &&
+    (input.include_superseded === true || getValidTo(node) == null) &&
     (!input.profile_id || getOntology(node)?.profile_id === input.profile_id || node.metadata.profile_id === input.profile_id) &&
     (!input.labels?.length || input.labels.every((label) => getLabels(node).includes(label))) &&
     matchesProperties(getProperties(node), input.filters)

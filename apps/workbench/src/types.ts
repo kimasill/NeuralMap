@@ -8,6 +8,9 @@ export interface AgentSummary {
   model: string;
   token_budget: number;
   cache_hit_rate: number;
+  permissions?: string[];
+  output_contract?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface WorkbenchGraph {

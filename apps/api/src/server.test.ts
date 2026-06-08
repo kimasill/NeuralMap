@@ -81,6 +81,189 @@ describe("api server", () => {
     }
   });
 
+  it("discovers Workbench agents from Context Packs and DynamicChat graph sources", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      const scope = {
+        tenant_id: "dynamicchat",
+        project_id: "simulation-a"
+      };
+      const simulationAgentId = "dynamicchat:simulation-a";
+
+      const ingestResponse = await app.inject({
+        method: "POST",
+        url: "/ingest/document",
+        payload: {
+          id: "dc-memory-1",
+          title: "DynamicChat memory",
+          uri: "dynamicchat://simulation-a/memory/1",
+          body: "A DynamicChat memory node should expose its connected runtime and agent.",
+          scope,
+          metadata: {
+            source: "dynamicchat",
+            agent_id: simulationAgentId
+          }
+        }
+      });
+
+      expect(ingestResponse.statusCode).toBe(200);
+
+      const contextResponse = await app.inject({
+        method: "POST",
+        url: "/context/compose",
+        payload: {
+          objective: "Continue DynamicChat simulation",
+          agent_id: simulationAgentId,
+          session_id: "session-a",
+          query: "DynamicChat memory",
+          token_budget: 1800,
+          scope
+        }
+      });
+
+      expect(contextResponse.statusCode).toBe(200);
+
+      const characterDeltaResponse = await app.inject({
+        method: "POST",
+        url: "/graph/deltas",
+        payload: {
+          idempotency_key: "dynamicchat:simulation-a:characters:v1",
+          profile_id: "simulation-memory",
+          source: {
+            system: "dynamicchat",
+            run_id: "run-a",
+            turn_id: "turn-a"
+          },
+          scope,
+          upsert_neurons: [
+            {
+              id: "simulation:simulation-a:person:char-mina",
+              type: "Person",
+              labels: ["Character", "Entity", "Actor"],
+              title: "Mina",
+              summary: "Mina participates in simulation A.",
+              source_system: "runtime",
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "Character"
+              },
+              properties: {
+                name: "Mina",
+                local_character_id: "char-mina",
+                simulation_id: "simulation-a"
+              },
+              metadata: {
+                agent_id: simulationAgentId,
+                source: "dynamicchat",
+                kind: "simulation_character"
+              }
+            },
+            {
+              id: "simulation:simulation-a:person:char-jun",
+              type: "Person",
+              labels: ["Character", "Entity", "Actor"],
+              title: "Jun",
+              summary: "Jun participates in simulation A.",
+              source_system: "runtime",
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "Character"
+              },
+              properties: {
+                name: "Jun",
+                local_character_id: "char-jun",
+                simulation_id: "simulation-a"
+              },
+              metadata: {
+                agent_id: simulationAgentId,
+                source: "dynamicchat",
+                kind: "simulation_character"
+              }
+            },
+            {
+              id: "simulation:simulation-a:state:char-mina:mood",
+              type: "Summary",
+              labels: ["State", "TemporalFact"],
+              title: "Mina mood",
+              summary: "Mina is cautiously optimistic.",
+              source_system: "runtime",
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "State"
+              },
+              properties: {
+                owner_id: "simulation:simulation-a:person:char-mina",
+                state_type: "Mood",
+                value: "cautiously optimistic"
+              },
+              metadata: {
+                agent_id: simulationAgentId,
+                source: "dynamicchat",
+                kind: "simulation_state"
+              }
+            }
+          ],
+          upsert_synapses: [
+            {
+              from: "simulation:simulation-a:person:char-mina",
+              to: "simulation:simulation-a:state:char-mina:mood",
+              type: "related_to",
+              ontology: {
+                profile_id: "simulation-memory",
+                type: "HAS_CURRENT_STATE"
+              },
+              properties: {
+                current_pointer_key: "simulation:simulation-a:person:char-mina:Mood"
+              }
+            }
+          ]
+        }
+      });
+
+      expect(characterDeltaResponse.statusCode).toBe(200);
+
+      const agentsResponse = await app.inject({
+        method: "GET",
+        url: "/workbench/agents?tenant_id=dynamicchat&project_id=simulation-a"
+      });
+      const agentIds = agentsResponse.json().agents.map((agent: { id: string }) => agent.id);
+      const overviewAgentsResponse = await app.inject({
+        method: "GET",
+        url: "/workbench/agents"
+      });
+      const overviewGraphResponse = await app.inject({
+        method: "GET",
+        url: "/workbench/graph/subgraph"
+      });
+      const overviewArtifactsResponse = await app.inject({
+        method: "GET",
+        url: "/workbench/artifacts"
+      });
+      const overviewAgentIds = overviewAgentsResponse.json().agents.map((agent: { id: string }) => agent.id);
+
+      expect(agentIds).toContain(simulationAgentId);
+      expect(overviewAgentIds).toContain(simulationAgentId);
+      expect(agentIds).not.toContain("dynamicchat-narrative-agent");
+      expect(agentIds).not.toContain("dynamicchat-memory-curator");
+      expect(overviewAgentIds).not.toContain("dynamicchat-narrative-agent");
+      expect(overviewAgentIds).not.toContain("dynamicchat-memory-curator");
+      expect(agentIds).not.toContain("dynamicchat-runtime");
+      expect(overviewAgentIds).not.toContain("dynamicchat-runtime");
+      expect(agentIds).not.toContain("simulation:simulation-a:person:char-mina");
+      expect(agentIds).not.toContain("simulation:simulation-a:person:char-jun");
+      expect(overviewAgentIds).not.toContain("simulation:simulation-a:person:char-mina");
+      expect(overviewAgentIds).not.toContain("simulation:simulation-a:person:char-jun");
+      expect(overviewGraphResponse.json().nodes.map((node: { id: string }) => node.id)).toContain("doc:dc-memory-1");
+      expect(overviewArtifactsResponse.json().context_packs.map((pack: { agent_id: string }) => pack.agent_id)).toContain(
+        simulationAgentId
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   it("caches graph query responses and reports cache stats", async () => {
     const app = createApp();
     await app.ready();
@@ -1550,6 +1733,85 @@ describe("api server", () => {
 
       expect(spanKinds).toContain("context_pack");
       expect(spanKinds).toContain("handoff");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("isolates graph memory by project scope across the same application", async () => {
+    const app = createApp();
+    await app.ready();
+
+    try {
+      const simAHeaders = {
+        "x-neuralmap-tenant-id": "dynamicchat",
+        "x-neuralmap-project-id": "simulation-a"
+      };
+      const simBHeaders = {
+        "x-neuralmap-tenant-id": "dynamicchat",
+        "x-neuralmap-project-id": "simulation-b"
+      };
+
+      await app.inject({
+        method: "POST",
+        url: "/ingest/ticket",
+        headers: simAHeaders,
+        payload: {
+          id: "SIM-A-1",
+          title: "Simulation A memory",
+          url: "dynamicchat://simulation-a/memory/1",
+          body: "Only simulation A should retrieve this memory.",
+          status: "open"
+        }
+      });
+      await app.inject({
+        method: "POST",
+        url: "/ingest/ticket",
+        headers: simBHeaders,
+        payload: {
+          id: "SIM-B-1",
+          title: "Simulation B memory",
+          url: "dynamicchat://simulation-b/memory/1",
+          body: "Only simulation B should retrieve this memory.",
+          status: "open"
+        }
+      });
+
+      const simAGraph = await app.inject({
+        method: "GET",
+        url: "/workbench/graph/subgraph?tenant_id=dynamicchat&project_id=simulation-a"
+      });
+      const simBGraph = await app.inject({
+        method: "GET",
+        url: "/workbench/graph/subgraph?tenant_id=dynamicchat&project_id=simulation-b"
+      });
+      const unscopedGraph = await app.inject({
+        method: "GET",
+        url: "/workbench/graph/subgraph"
+      });
+      const unscopedQuery = await app.inject({
+        method: "POST",
+        url: "/graph/query",
+        payload: {
+          query: "Simulation memory",
+          top_k: 10,
+          expand_hops: 1,
+          min_edge_confidence: 0.4
+        }
+      });
+
+      const simANodeIds = simAGraph.json().nodes.map((node: { id: string }) => node.id);
+      const simBNodeIds = simBGraph.json().nodes.map((node: { id: string }) => node.id);
+      const unscopedNodeIds = unscopedGraph.json().nodes.map((node: { id: string }) => node.id);
+      const unscopedQueryNodeIds = unscopedQuery.json().neighborhood.nodes.map((node: { id: string }) => node.id);
+
+      expect(simANodeIds).toContain("ticket:SIM-A-1");
+      expect(simANodeIds).not.toContain("ticket:SIM-B-1");
+      expect(simBNodeIds).toContain("ticket:SIM-B-1");
+      expect(simBNodeIds).not.toContain("ticket:SIM-A-1");
+      expect(unscopedNodeIds).toEqual(expect.arrayContaining(["ticket:SIM-A-1", "ticket:SIM-B-1"]));
+      expect(unscopedQueryNodeIds).not.toContain("ticket:SIM-A-1");
+      expect(unscopedQueryNodeIds).not.toContain("ticket:SIM-B-1");
     } finally {
       await app.close();
     }

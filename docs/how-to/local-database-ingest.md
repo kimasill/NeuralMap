@@ -88,7 +88,7 @@ pnpm dev:api
 pnpm dev:workbench
 ```
 
-7. Open `http://localhost:5173`.
+7. Open `http://localhost:3001`.
 
 The Workbench source badge should show `Database` after the API can read persisted graph nodes from Postgres.
 

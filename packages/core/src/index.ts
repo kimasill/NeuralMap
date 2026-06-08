@@ -6,6 +6,7 @@ export * from "./graph-profiles.js";
 export * from "./graph-delta.js";
 export * from "./graph-expansion.js";
 export * from "./context-pack-composer.js";
+export * from "./context-validation.js";
 export * from "./content-modules.js";
 export * from "./memory-consolidation.js";
 export * from "./agent-registry.js";

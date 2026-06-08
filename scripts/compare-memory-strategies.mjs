@@ -7,7 +7,8 @@ import {
   getSynapseType,
   queryGraphNeurons,
   rankSeedNodes,
-  traverseGraph
+  traverseGraph,
+  validateContextPack
 } from "../packages/core/dist/index.js";
 
 const eventCount = Number(process.env.NEURALMAP_MEMORY_COMPARE_EVENTS ?? 240);
@@ -144,6 +145,16 @@ const strategies = [
       }
     );
 
+    const validation = validateContextPack(pack, workload.memory.nodes);
+    // A consumer that respects the pack's section structure renders history through
+    // the temporally-framed relevant_history channel and does not re-dump the same
+    // nodes as unframed flat evidence.
+    const sectionNodeIds = new Set(
+      Object.values(pack.sections ?? {})
+        .flat()
+        .map((item) => item.node_id)
+    );
+
     return {
       empirical: true,
       context: [
@@ -152,13 +163,22 @@ const strategies = [
             `Current ${item.current_key}: ${item.node.summary ?? item.node.title}; valid_from=${item.valid_from ?? "unknown"}; valid_to=${item.valid_to ?? "null"}`
         ),
         ...traversal.edges.map((edge) => `Temporal synapse: ${edge.from} ${getSynapseType(edge)} ${edge.to}`),
-        ...traversal.nodes.map((node) => `Traversed neuron ${node.id}: ${node.summary ?? node.title}`),
-        ...pack.evidence.map((item) => `Evidence ${item.node_id}: ${item.snippet}`),
+        ...traversal.nodes.map((node) => `Traversed neuron ${node.id}${formatTemporalTag(node)}: ${node.summary ?? node.title}`),
+        ...pack.evidence
+          .filter((item) => !sectionNodeIds.has(item.node_id))
+          .map((item) => `Evidence ${item.node_id}: ${item.snippet}`),
         ...Object.entries(pack.sections ?? {}).flatMap(([section, items]) =>
-          items.map((item) => `Section ${section} ${item.node_id}: ${item.snippet}`)
+          items.map((item) => `Section ${section}${isHistorySection(section) ? " [historical]" : ""} ${item.node_id}: ${item.snippet}`)
         )
       ].join("\n"),
       selected_nodes: pack.node_ids,
+      pack_validation: {
+        ok: validation.ok,
+        issue_count: validation.issues.length,
+        warning_count: validation.warnings.length,
+        stale_evidence_count: validation.stats.stale_evidence_count,
+        conflict_count: validation.stats.conflict_count
+      },
       graph: {
         current_items: current.items.length,
         queried_nodes: neuronQuery.nodes.length,
@@ -194,7 +214,11 @@ result.verdict = {
       summaryCache.context_tokens < neuralMap.context_tokens &&
       summaryCache.facts.predecessor_lineage === false &&
       neuralMap.facts.predecessor_lineage === true
-  )
+  ),
+  neuralmap_pack_has_no_stale_conflicts:
+    neuralMap?.stale_conflicts.length === 0 &&
+    Boolean(neuralMap?.pack_validation?.ok) &&
+    neuralMap?.pack_validation?.stale_evidence_count === 0
 };
 result.ok = Object.values(result.verdict).every(Boolean);
 
@@ -238,6 +262,7 @@ function benchmarkStrategy(id, description, buildContext) {
       },
       ...(first.value.modeled_cache ? { modeled_cache: first.value.modeled_cache } : {}),
       ...(first.value.selected_nodes ? { selected_nodes: first.value.selected_nodes } : {}),
+      ...(first.value.pack_validation ? { pack_validation: first.value.pack_validation } : {}),
       ...(first.value.graph ? { graph: first.value.graph } : {})
     }
   };
@@ -491,24 +516,41 @@ function createRollingSummarySnapshot(transcript) {
     .join("\n");
 }
 
+// A stale value is flagged per-line: a non-current wearing value only counts as a
+// stale conflict when the line that asserts it lacks any temporal disambiguation
+// marker. This is stricter than a single global flag and actually detects state
+// that leaks into context without historical framing.
 function scoreContext(context) {
+  const temporalMarker = /valid_to|supersed|previous|predecessor|historical|temporal synapse/u;
+  const currentWearingValue = "navy coat";
+  const staleWearingValues = ["old hoodie", "gray raincoat"];
   const lower = context.toLowerCase();
-  const hasTemporalDisambiguation = /supersedes|valid_to|previous|predecessor|current char:mina|temporal synapse/u.test(lower);
-  const facts = {
-    current_wearing: lower.includes("navy coat"),
-    durable_promise: lower.includes("silver key") && lower.includes("trust"),
-    predecessor_lineage: lower.includes("gray raincoat") && hasTemporalDisambiguation
-  };
+  const lines = lower.split("\n");
   const staleConflicts = [];
+  let lineageMarked = false;
 
-  if (!hasTemporalDisambiguation) {
-    if (lower.includes("old hoodie")) {
-      staleConflicts.push("old hoodie appears without lifecycle/temporal disambiguation");
-    }
-    if (lower.includes("gray raincoat")) {
-      staleConflicts.push("gray raincoat appears without lifecycle/temporal disambiguation");
+  for (const line of lines) {
+    const marked = temporalMarker.test(line);
+    for (const value of staleWearingValues) {
+      if (!line.includes(value)) {
+        continue;
+      }
+      if (marked) {
+        if (value === "gray raincoat") {
+          lineageMarked = true;
+        }
+      } else {
+        staleConflicts.push(`${value} asserted without temporal disambiguation: "${line.trim().slice(0, 90)}"`);
+      }
     }
   }
+
+  const hasTemporalDisambiguation = temporalMarker.test(lower);
+  const facts = {
+    current_wearing: lower.includes(currentWearingValue),
+    durable_promise: lower.includes("silver key") && lower.includes("trust"),
+    predecessor_lineage: lineageMarked
+  };
 
   const recallScore = Object.values(facts).filter(Boolean).length / Object.keys(facts).length;
   const precisionScore = Math.max(0, 1 - staleConflicts.length * 0.25);
@@ -523,6 +565,22 @@ function scoreContext(context) {
     lineage_score: lineageScore,
     quality_score: rounded(recallScore * 0.6 + precisionScore * 0.25 + lineageScore * 0.15)
   };
+}
+
+function isHistorySection(section) {
+  return /history|event|loop|thread/u.test(section.toLowerCase());
+}
+
+function formatTemporalTag(node) {
+  const validTo = node.valid_to ?? node.metadata?.valid_to ?? null;
+  const status = node.lifecycle_status ?? node.metadata?.lifecycle_status ?? "active";
+  if (validTo != null) {
+    return ` [superseded; historical; valid_to=${validTo}]`;
+  }
+  if (status === "archived" || status === "deprecated") {
+    return ` [${status}; historical]`;
+  }
+  return "";
 }
 
 function timed(operation) {

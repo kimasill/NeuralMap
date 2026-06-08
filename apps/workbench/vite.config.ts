@@ -8,15 +8,17 @@ export default defineConfig({
       output: {
         manualChunks: {
           "react-vendor": ["react", "react-dom"],
-          "graph-vendor": ["cytoscape"]
+          "graph-vendor": ["react-force-graph-2d", "react-force-graph-3d", "three"]
         }
       }
     }
   },
   server: {
-    port: 5173
+    port: 3001,
+    strictPort: true
   },
   preview: {
-    port: 4173
+    port: 3002,
+    strictPort: true
   }
 });

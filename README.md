@@ -24,6 +24,14 @@ Core capabilities:
 - Postgres + pgvector persistence for graph memory, chunks, artifacts, traces, context packs, handoff packs, and graph delta commits.
 - Local and DB-backed modes so the API can run with sample memory during development and Postgres in integration flows.
 
+## Workbench
+
+The Workbench is a local UI for inspecting agent memory as a living neuron/synapse network. It renders the graph in an interactive 3D (or 2D) force layout, with node-type colouring, importance-scaled neurons, synapse highlighting, a Context Inspector, run/activity timeline, and scope-aware filtering.
+
+![NeuralMap Workbench — interactive 3D neuron/synapse graph with Context Inspector](docs/assets/workbench-3d.png)
+
+Run `pnpm dev` to start Postgres + Redis, apply migrations, and launch the API and Workbench together, then open `http://localhost:3001`. The source badge reads `Database` once the API can read persisted graph nodes, or `Sample` when it falls back to in-memory sample memory.
+
 ## Why Neuron/Synapse Graph Memory
 
 Provider prompt caching can reduce repeated-prefix latency and input-token cost when a prompt prefix is reused, but it does not decide which facts are current, remove stale state, or shrink the context window by itself.
@@ -110,6 +118,33 @@ See [Run Local Database Ingest](docs/how-to/local-database-ingest.md) for the fu
 
 On Windows, `pnpm infra:up` uses Docker Desktop when available and falls back to the configured WSL Docker engine. It waits for Postgres and Redis health checks before returning. Root commands that go through `scripts/with-env.mjs` can also refresh a WSL-backed `DATABASE_URL` to the current WSL IP at runtime.
 
+## Scope And Database Routing
+
+NeuralMap stays generic by treating product boundaries as graph scope, not as DynamicChat-specific core types. API calls can carry any of these scope fields in the JSON body, HTTP headers, or Workbench query string:
+
+- `tenant_id` / `x-neuralmap-tenant-id`
+- `workspace_id` / `x-neuralmap-workspace-id`
+- `project_id` / `x-neuralmap-project-id`
+- `owner_scope` / `x-neuralmap-owner-scope`
+
+For a single shared database, scope filtering keeps separate tenants, workspaces, projects, and simulations from seeing each other's scoped graph memory. The Workbench can inspect a scoped graph with a URL such as:
+
+```text
+http://localhost:3001/?tenant_id=dynamicchat&project_id=simulation-a
+```
+
+When physical database isolation is required, set `NEURALMAP_DATABASE_ROUTES` to a JSON object that maps scope route keys to Postgres URLs:
+
+```bash
+NEURALMAP_DATABASE_ROUTES='{
+  "project:simulation-a": "postgres://neuralmap:neuralmap@localhost:5432/neuralmap_sim_a",
+  "project:simulation-b": "postgres://neuralmap:neuralmap@localhost:5432/neuralmap_sim_b",
+  "default": "postgres://neuralmap:neuralmap@localhost:5432/neuralmap"
+}'
+```
+
+Route precedence is `project:<project_id>`, then `workspace:<workspace_id>`, `tenant:<tenant_id>`, `owner:<owner_scope>`, then `default`. Routed databases must already exist and have NeuralMap migrations applied. A connected empty database returns an empty database graph; sample graph fallback is reserved for missing or unavailable database connections.
+
 ## Evaluation and Benchmarks
 
 ```bash
@@ -123,7 +158,7 @@ pnpm bench:graphrag-core
 Recent local verification from the generic neuron/synapse implementation:
 
 - `pnpm typecheck` passed.
-- `pnpm test` passed: 37 tests.
+- `pnpm test` passed: 38 tests.
 - `pnpm build` passed.
 - `pnpm db:smoke` passed against the local WSL Postgres container after `pnpm infra:up`.
 - `pnpm eval:neuron-synapse` passed on 240 synthetic agent turns.

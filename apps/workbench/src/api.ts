@@ -26,8 +26,18 @@ import type {
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4317";
 export const WORKBENCH_RUN_ID = "run_workbench_phase_1";
+export const WORKBENCH_SCOPE = readWorkbenchScope();
 const fallbackContextPacks: ContextPack[] = [];
 const fallbackHandoffPacks: HandoffPack[] = [];
+
+export type WorkbenchScopeField = "tenant_id" | "workspace_id" | "project_id" | "owner_scope";
+
+export interface WorkbenchScope {
+  label: string;
+  routeLabel: string;
+  headers: Record<string, string>;
+  fields: Record<WorkbenchScopeField, string>;
+}
 
 export async function fetchWorkbenchGraph(): Promise<WorkbenchGraph> {
   return fetchJson<WorkbenchGraph>("/workbench/graph/subgraph", fallbackGraph);
@@ -154,6 +164,9 @@ async function fetchJson<T>(path: string, fallback: T, init: RequestInit = {}): 
   try {
     const headers = new Headers(init.headers);
     headers.set("x-neuralmap-run-id", WORKBENCH_RUN_ID);
+    for (const [name, value] of Object.entries(WORKBENCH_SCOPE.headers)) {
+      headers.set(name, value);
+    }
     if (init.body && !headers.has("content-type")) {
       headers.set("content-type", "application/json");
     }
@@ -171,6 +184,82 @@ async function fetchJson<T>(path: string, fallback: T, init: RequestInit = {}): 
   } catch {
     return fallback;
   }
+}
+
+export function applyWorkbenchScope(fields: Record<WorkbenchScopeField, string>): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  const hasScopeValue = scopeFields.some((key) => fields[key].trim().length > 0);
+  for (const key of scopeFields) {
+    const value = fields[key].trim();
+    if (value.length > 0) {
+      searchParams.set(key, value);
+    } else if (!hasScopeValue) {
+      searchParams.set(key, "");
+    } else {
+      searchParams.delete(key);
+    }
+  }
+
+  const search = searchParams.toString();
+  window.location.assign(`${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`);
+}
+
+const scopeFields = ["tenant_id", "workspace_id", "project_id", "owner_scope"] as const;
+
+function readWorkbenchScope(): WorkbenchScope {
+  const searchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const fields = [
+    ["tenant_id", "x-neuralmap-tenant-id", import.meta.env.VITE_NEURALMAP_TENANT_ID],
+    ["workspace_id", "x-neuralmap-workspace-id", import.meta.env.VITE_NEURALMAP_WORKSPACE_ID],
+    ["project_id", "x-neuralmap-project-id", import.meta.env.VITE_NEURALMAP_PROJECT_ID],
+    ["owner_scope", "x-neuralmap-owner-scope", import.meta.env.VITE_NEURALMAP_OWNER_SCOPE]
+  ] as const;
+  const headers: Record<string, string> = {};
+  const values: Record<WorkbenchScopeField, string> = {
+    tenant_id: "",
+    workspace_id: "",
+    project_id: "",
+    owner_scope: ""
+  };
+  const labels: string[] = [];
+
+  for (const [param, header, fallback] of fields) {
+    const value = searchParams.has(param) ? searchParams.get(param) : fallback;
+    if (!value?.trim()) {
+      continue;
+    }
+    const normalized = value.trim();
+    values[param] = normalized;
+    headers[header] = normalized;
+    labels.push(`${param}=${normalized}`);
+  }
+
+  return {
+    label: labels.length > 0 ? labels.join(" / ") : "unscoped",
+    routeLabel: routeLabelFromScope(values),
+    fields: values,
+    headers
+  };
+}
+
+function routeLabelFromScope(fields: Record<WorkbenchScopeField, string>): string {
+  if (fields.project_id) {
+    return `project:${fields.project_id}`;
+  }
+  if (fields.workspace_id) {
+    return `workspace:${fields.workspace_id}`;
+  }
+  if (fields.tenant_id) {
+    return `tenant:${fields.tenant_id}`;
+  }
+  if (fields.owner_scope) {
+    return `owner:${fields.owner_scope}`;
+  }
+  return "default";
 }
 
 function createFallbackGraphQuery(input: GraphQueryInput): GraphQueryResult {

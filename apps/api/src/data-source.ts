@@ -27,6 +27,7 @@ export type DataMode = "database" | "sample";
 export interface GraphDataSource {
   mode: DataMode;
   getMemory(scope?: GraphScope): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; generated_at: string; mode: DataMode }>;
+  getOverviewMemory(): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; generated_at: string; mode: DataMode }>;
   getNode(id: string, scope?: GraphScope): Promise<GraphNode | undefined>;
   searchVectorSeeds(request: GraphQueryRequest, limit?: number): Promise<VectorSeedCandidate[]>;
   persistIngest(
@@ -41,25 +42,215 @@ export interface GraphDataSource {
   saveContextPack(pack: ContextPack, scope?: GraphScope): Promise<ContextPack>;
   getContextPack(id: string, scope?: GraphScope): Promise<ContextPack | undefined>;
   listContextPacks(limit?: number, scope?: GraphScope): Promise<ContextPack[]>;
+  listOverviewContextPacks(limit?: number): Promise<ContextPack[]>;
   saveHandoffPack(pack: HandoffPack, scope?: GraphScope): Promise<HandoffPack>;
   getHandoffPack(id: string, scope?: GraphScope): Promise<HandoffPack | undefined>;
   listHandoffPacks(limit?: number, scope?: GraphScope): Promise<HandoffPack[]>;
+  listOverviewHandoffPacks(limit?: number): Promise<HandoffPack[]>;
   getEmbeddingHealth(scope?: GraphScope): Promise<EmbeddingHealth>;
   backfillEmbeddings(input?: EmbeddingBackfillInput): Promise<EmbeddingBackfillResult>;
   redactGraph(input: RedactGraphInput): Promise<{ nodes: number; edges: number; chunks: number; mode: DataMode }>;
 }
 
 export function createGraphDataSource(): GraphDataSource {
-  if (!process.env.DATABASE_URL) {
-    return createSampleDataSource("DATABASE_URL is not configured.");
+  const defaultDataSource = createSingleGraphDataSource(process.env.DATABASE_URL, "DATABASE_URL is not configured.");
+  const databaseRoutes = parseDatabaseRoutes(process.env.NEURALMAP_DATABASE_ROUTES);
+  if (databaseRoutes.size === 0) {
+    return defaultDataSource;
+  }
+
+  return createRoutedDataSource(defaultDataSource, databaseRoutes);
+}
+
+function createSingleGraphDataSource(connectionString: string | undefined, missingReason: string): GraphDataSource {
+  if (!connectionString) {
+    return createSampleDataSource(missingReason);
   }
 
   try {
-    const { db } = createDbClient(process.env.DATABASE_URL);
+    const { db } = createDbClient(connectionString);
     return createDatabaseDataSource(createGraphStore(db));
   } catch {
     return createSampleDataSource("Database client could not be created.");
   }
+}
+
+function createRoutedDataSource(
+  fallback: GraphDataSource,
+  routes: ReadonlyMap<string, string>
+): GraphDataSource {
+  const dataSourcesByUrl = new Map<string, GraphDataSource>();
+  const sourceForScope = (scope: GraphScope | undefined): GraphDataSource => {
+    const url = resolveDatabaseRoute(routes, scope);
+    if (!url) {
+      return fallback;
+    }
+
+    const cached = dataSourcesByUrl.get(url);
+    if (cached) {
+      return cached;
+    }
+
+    const next = createSingleGraphDataSource(url, "Routed DATABASE_URL is not configured.");
+    dataSourcesByUrl.set(url, next);
+    return next;
+  };
+
+  return {
+    mode: fallback.mode === "database" || routes.size > 0 ? "database" : fallback.mode,
+
+    getMemory(scope) {
+      return sourceForScope(scope).getMemory(scope);
+    },
+
+    async getOverviewMemory() {
+      const memories = await Promise.all(uniqueRoutedSources(fallback, routes, dataSourcesByUrl).map((source) => source.getOverviewMemory()));
+      return {
+        ...mergeMemories(memories),
+        generated_at: new Date().toISOString(),
+        mode: "database"
+      };
+    },
+
+    getNode(id, scope) {
+      return sourceForScope(scope).getNode(id, scope);
+    },
+
+    searchVectorSeeds(request, limit) {
+      return sourceForScope(request.scope).searchVectorSeeds(request, limit);
+    },
+
+    persistIngest(emission, scope) {
+      return sourceForScope(scope).persistIngest(emission, scope);
+    },
+
+    getGraphDeltaCommit(idempotencyKey, scope) {
+      return sourceForScope(scope).getGraphDeltaCommit(idempotencyKey, scope);
+    },
+
+    saveGraphDeltaCommit(input, scope) {
+      return sourceForScope(input.scope ?? scope).saveGraphDeltaCommit(input, scope);
+    },
+
+    saveContextPack(pack, scope) {
+      return sourceForScope(pack.scope ?? scope).saveContextPack(pack, scope);
+    },
+
+    getContextPack(id, scope) {
+      return sourceForScope(scope).getContextPack(id, scope);
+    },
+
+    listContextPacks(limit, scope) {
+      return sourceForScope(scope).listContextPacks(limit, scope);
+    },
+
+    async listOverviewContextPacks(limit) {
+      const packs = await Promise.all(
+        uniqueRoutedSources(fallback, routes, dataSourcesByUrl).map((source) => source.listOverviewContextPacks(limit))
+      );
+      return sortByCreatedAtDesc(uniqueById(packs.flat())).slice(0, limit ?? 10);
+    },
+
+    saveHandoffPack(pack, scope) {
+      return sourceForScope(pack.scope ?? scope).saveHandoffPack(pack, scope);
+    },
+
+    getHandoffPack(id, scope) {
+      return sourceForScope(scope).getHandoffPack(id, scope);
+    },
+
+    listHandoffPacks(limit, scope) {
+      return sourceForScope(scope).listHandoffPacks(limit, scope);
+    },
+
+    async listOverviewHandoffPacks(limit) {
+      const packs = await Promise.all(
+        uniqueRoutedSources(fallback, routes, dataSourcesByUrl).map((source) => source.listOverviewHandoffPacks(limit))
+      );
+      return sortByCreatedAtDesc(uniqueById(packs.flat())).slice(0, limit ?? 10);
+    },
+
+    getEmbeddingHealth(scope) {
+      return sourceForScope(scope).getEmbeddingHealth(scope);
+    },
+
+    backfillEmbeddings(input = {}) {
+      return sourceForScope(input.scope).backfillEmbeddings(input);
+    },
+
+    redactGraph(input) {
+      return sourceForScope(input.scope).redactGraph(input);
+    }
+  };
+}
+
+function parseDatabaseRoutes(raw: string | undefined): Map<string, string> {
+  const routes = new Map<string, string>();
+  if (!raw?.trim()) {
+    return routes;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return routes;
+    }
+
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value.trim().length > 0) {
+        routes.set(key.trim(), value.trim());
+      }
+    }
+  } catch {
+    return routes;
+  }
+
+  return routes;
+}
+
+function resolveDatabaseRoute(routes: ReadonlyMap<string, string>, scope: GraphScope | undefined): string | undefined {
+  const keys = databaseRouteKeys(scope);
+  for (const key of keys) {
+    const url = routes.get(key);
+    if (url) {
+      return url;
+    }
+  }
+
+  return routes.get("default");
+}
+
+function databaseRouteKeys(scope: GraphScope | undefined): string[] {
+  if (!scope) {
+    return [];
+  }
+
+  return [
+    scope.project_id ? `project:${scope.project_id}` : undefined,
+    scope.workspace_id ? `workspace:${scope.workspace_id}` : undefined,
+    scope.tenant_id ? `tenant:${scope.tenant_id}` : undefined,
+    scope.owner_scope ? `owner:${scope.owner_scope}` : undefined
+  ].filter((key): key is string => Boolean(key));
+}
+
+function uniqueRoutedSources(
+  fallback: GraphDataSource,
+  routes: ReadonlyMap<string, string>,
+  cachedSources: Map<string, GraphDataSource>
+): GraphDataSource[] {
+  const sources = new Map<string, GraphDataSource>([["fallback", fallback]]);
+  for (const url of new Set(routes.values())) {
+    const cached = cachedSources.get(url);
+    if (cached) {
+      sources.set(url, cached);
+      continue;
+    }
+
+    const source = createSingleGraphDataSource(url, "Routed DATABASE_URL is not configured.");
+    cachedSources.set(url, source);
+    sources.set(url, source);
+  }
+  return [...sources.values()];
 }
 
 function createDatabaseDataSource(store: GraphStore): GraphDataSource {
@@ -71,10 +262,6 @@ function createDatabaseDataSource(store: GraphStore): GraphDataSource {
     async getMemory(scope) {
       try {
         const memory = await store.getMemory();
-        if (memory.nodes.length === 0) {
-          return sample.getMemory(scope);
-        }
-
         return {
           ...filterMemory(memory, scope),
           generated_at: new Date().toISOString(),
@@ -82,6 +269,19 @@ function createDatabaseDataSource(store: GraphStore): GraphDataSource {
         };
       } catch {
         return sample.getMemory(scope);
+      }
+    },
+
+    async getOverviewMemory() {
+      try {
+        const memory = await store.getMemory();
+        return {
+          ...filterOverviewMemory(memory),
+          generated_at: new Date().toISOString(),
+          mode: "database"
+        };
+      } catch {
+        return sample.getOverviewMemory();
       }
     },
 
@@ -103,117 +303,185 @@ function createDatabaseDataSource(store: GraphStore): GraphDataSource {
     },
 
     async persistIngest(emission, scope) {
-      const scopedEmission = applyScopeToEmission(emission, scope);
-      const result = await store.upsertGraph({
-        nodes: scopedEmission.nodes,
-        edges: scopedEmission.edges,
-        chunks: scopedEmission.chunks
-      });
-      return {
-        ...result,
-        mode: "database"
-      };
+      try {
+        const scopedEmission = applyScopeToEmission(emission, scope);
+        const result = await store.upsertGraph({
+          nodes: scopedEmission.nodes,
+          edges: scopedEmission.edges,
+          chunks: scopedEmission.chunks
+        });
+        return {
+          ...result,
+          mode: "database"
+        };
+      } catch {
+        return sample.persistIngest(emission, scope);
+      }
     },
 
     async getGraphDeltaCommit(idempotencyKey, scope) {
-      const commit = await store.getGraphDeltaCommit(idempotencyKey);
-      if (!commit || !scopeMatches(commit.scope, scope)) {
-        return undefined;
+      try {
+        const commit = await store.getGraphDeltaCommit(idempotencyKey);
+        if (!commit || !scopeMatches(commit.scope, scope)) {
+          return undefined;
+        }
+        return commit;
+      } catch {
+        return sample.getGraphDeltaCommit(idempotencyKey, scope);
       }
-      return commit;
     },
 
     async saveGraphDeltaCommit(input, scope) {
-      const saved = await store.saveGraphDeltaCommit({
-        ...input,
-        scope: input.scope ?? scope
-      });
-      return {
-        ...saved,
-        mode: "database"
-      };
+      try {
+        const saved = await store.saveGraphDeltaCommit({
+          ...input,
+          scope: input.scope ?? scope
+        });
+        return {
+          ...saved,
+          mode: "database"
+        };
+      } catch {
+        return sample.saveGraphDeltaCommit(input, scope);
+      }
     },
 
     async saveContextPack(pack, scope) {
-      const scopedPack = applyScopeToContextPack(pack, scope);
-      const saved = await store.saveContextPack(scopedPack);
-      await persistLinkedArtifact(
-        () => store.getMemory(),
-        (emission) =>
-          store.upsertGraph({
-            nodes: emission.nodes,
-            edges: emission.edges,
-            chunks: emission.chunks
-          }),
-        ingestContextPackArtifact(saved)
-      );
-      return saved;
+      try {
+        const scopedPack = applyScopeToContextPack(pack, scope);
+        const saved = await store.saveContextPack(scopedPack);
+        await persistLinkedArtifact(
+          () => store.getMemory(),
+          (emission) =>
+            store.upsertGraph({
+              nodes: emission.nodes,
+              edges: emission.edges,
+              chunks: emission.chunks
+            }),
+          ingestContextPackArtifact(saved)
+        );
+        return saved;
+      } catch {
+        return sample.saveContextPack(pack, scope);
+      }
     },
 
     async getContextPack(id, scope) {
-      const pack = await store.getContextPack(id);
-      if (!pack || !scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope)) {
-        return undefined;
-      }
+      try {
+        const pack = await store.getContextPack(id);
+        if (!pack || !scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope)) {
+          return undefined;
+        }
 
-      return sanitizeContextPack(pack, await visibleNodeIdsFromStore(store, scope));
+        return sanitizeContextPack(pack, await visibleNodeIdsFromStore(store, scope));
+      } catch {
+        return sample.getContextPack(id, scope);
+      }
     },
 
     async listContextPacks(limit, scope) {
-      const packs = await store.listContextPacks(limit);
-      const visibleIds = await visibleNodeIdsFromStore(store, scope);
-      return packs
-        .filter((pack) => scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope))
-        .map((pack) => sanitizeContextPack(pack, visibleIds));
+      try {
+        const packs = await store.listContextPacks(limit);
+        const visibleIds = await visibleNodeIdsFromStore(store, scope);
+        return packs
+          .filter((pack) => scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope))
+          .map((pack) => sanitizeContextPack(pack, visibleIds));
+      } catch {
+        return sample.listContextPacks(limit, scope);
+      }
+    },
+
+    async listOverviewContextPacks(limit = 10) {
+      try {
+        const packs = await store.listContextPacks(limit);
+        const visibleIds = await overviewNodeIdsFromStore(store);
+        return packs.map((pack) => sanitizeContextPack(pack, visibleIds));
+      } catch {
+        return sample.listOverviewContextPacks(limit);
+      }
     },
 
     async saveHandoffPack(pack, scope) {
-      const scopedPack = applyScopeToHandoffPack(pack, scope);
-      const saved = await store.saveHandoffPack(scopedPack);
-      await persistLinkedArtifact(
-        () => store.getMemory(),
-        (emission) =>
-          store.upsertGraph({
-            nodes: emission.nodes,
-            edges: emission.edges,
-            chunks: emission.chunks
-          }),
-        ingestHandoffPackArtifact(saved)
-      );
-      return saved;
+      try {
+        const scopedPack = applyScopeToHandoffPack(pack, scope);
+        const saved = await store.saveHandoffPack(scopedPack);
+        await persistLinkedArtifact(
+          () => store.getMemory(),
+          (emission) =>
+            store.upsertGraph({
+              nodes: emission.nodes,
+              edges: emission.edges,
+              chunks: emission.chunks
+            }),
+          ingestHandoffPackArtifact(saved)
+        );
+        return saved;
+      } catch {
+        return sample.saveHandoffPack(pack, scope);
+      }
     },
 
     async getHandoffPack(id, scope) {
-      const pack = await store.getHandoffPack(id);
-      if (!pack || !scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope)) {
-        return undefined;
-      }
+      try {
+        const pack = await store.getHandoffPack(id);
+        if (!pack || !scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope)) {
+          return undefined;
+        }
 
-      return sanitizeHandoffPack(pack, await visibleNodeIdsFromStore(store, scope));
+        return sanitizeHandoffPack(pack, await visibleNodeIdsFromStore(store, scope));
+      } catch {
+        return sample.getHandoffPack(id, scope);
+      }
     },
 
     async listHandoffPacks(limit, scope) {
-      const packs = await store.listHandoffPacks(limit);
-      const visibleIds = await visibleNodeIdsFromStore(store, scope);
-      return packs
-        .filter((pack) => scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope))
-        .map((pack) => sanitizeHandoffPack(pack, visibleIds));
+      try {
+        const packs = await store.listHandoffPacks(limit);
+        const visibleIds = await visibleNodeIdsFromStore(store, scope);
+        return packs
+          .filter((pack) => scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope))
+          .map((pack) => sanitizeHandoffPack(pack, visibleIds));
+      } catch {
+        return sample.listHandoffPacks(limit, scope);
+      }
+    },
+
+    async listOverviewHandoffPacks(limit = 10) {
+      try {
+        const packs = await store.listHandoffPacks(limit);
+        const visibleIds = await overviewNodeIdsFromStore(store);
+        return packs.map((pack) => sanitizeHandoffPack(pack, visibleIds));
+      } catch {
+        return sample.listOverviewHandoffPacks(limit);
+      }
     },
 
     async getEmbeddingHealth(scope) {
-      return store.getEmbeddingHealth(scope);
+      try {
+        return await store.getEmbeddingHealth(scope);
+      } catch {
+        return sample.getEmbeddingHealth(scope);
+      }
     },
 
     async backfillEmbeddings(input = {}) {
-      return store.backfillEmbeddings(input);
+      try {
+        return await store.backfillEmbeddings(input);
+      } catch {
+        return sample.backfillEmbeddings(input);
+      }
     },
 
     async redactGraph(input) {
-      const result = await store.redactGraph(input);
-      return {
-        ...result,
-        mode: "database"
-      };
+      try {
+        const result = await store.redactGraph(input);
+        return {
+          ...result,
+          mode: "database"
+        };
+      } catch {
+        return sample.redactGraph(input);
+      }
     }
   };
 }
@@ -232,6 +500,14 @@ function createSampleDataSource(reason: string): GraphDataSource {
     async getMemory(scope) {
       return {
         ...filterMemory({ nodes, edges }, scope, redactedNodeIds),
+        generated_at: new Date().toISOString(),
+        mode: "sample"
+      };
+    },
+
+    async getOverviewMemory() {
+      return {
+        ...filterOverviewMemory({ nodes, edges }, redactedNodeIds),
         generated_at: new Date().toISOString(),
         mode: "sample"
       };
@@ -324,6 +600,13 @@ function createSampleDataSource(reason: string): GraphDataSource {
         .slice(0, limit);
     },
 
+    async listOverviewContextPacks(limit = 10) {
+      const visibleIds = new Set(filterOverviewMemory({ nodes, edges }, redactedNodeIds).nodes.map((node) => node.id));
+      return sortByCreatedAtDesc([...contextPacks.values()])
+        .map((pack) => sanitizeContextPack(pack, visibleIds))
+        .slice(0, limit);
+    },
+
     async saveHandoffPack(pack, scope) {
       const scopedPack = applyScopeToHandoffPack(pack, scope);
       handoffPacks.set(scopedPack.id, scopedPack);
@@ -350,6 +633,13 @@ function createSampleDataSource(reason: string): GraphDataSource {
       const visibleIds = new Set(nodes.filter((node) => isVisibleNode(node, scope, redactedNodeIds)).map((node) => node.id));
       return sortByCreatedAtDesc([...handoffPacks.values()])
         .filter((pack) => scopeMatches(pack.scope ?? getScopeFromMetadata(pack.metadata), scope))
+        .map((pack) => sanitizeHandoffPack(pack, visibleIds))
+        .slice(0, limit);
+    },
+
+    async listOverviewHandoffPacks(limit = 10) {
+      const visibleIds = new Set(filterOverviewMemory({ nodes, edges }, redactedNodeIds).nodes.map((node) => node.id));
+      return sortByCreatedAtDesc([...handoffPacks.values()])
         .map((pack) => sanitizeHandoffPack(pack, visibleIds))
         .slice(0, limit);
     },
@@ -486,6 +776,29 @@ function upsertById<T extends { id: string }>(items: T[], item: T): void {
   items.push(item);
 }
 
+function mergeMemories(memories: Array<{ nodes: GraphNode[]; edges: GraphEdge[] }>): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  return {
+    nodes: uniqueById(memories.flatMap((memory) => memory.nodes)),
+    edges: uniqueById(memories.flatMap((memory) => memory.edges))
+  };
+}
+
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  return [...new Map(items.map((item) => [item.id, item])).values()];
+}
+
+function filterOverviewMemory(
+  memory: { nodes: GraphNode[]; edges: GraphEdge[] },
+  redactedNodeIds: ReadonlySet<string> = new Set()
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes = memory.nodes.filter((node) => !redactedNodeIds.has(node.id) && !isRedactedNode(node));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  return {
+    nodes,
+    edges: memory.edges.filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to) && !isRedactedEdge(edge))
+  };
+}
+
 function filterMemory(
   memory: { nodes: GraphNode[]; edges: GraphEdge[] },
   scope: GraphScope | undefined,
@@ -591,6 +904,11 @@ function sanitizeHandoffPack(pack: HandoffPack, visibleIds: ReadonlySet<string>)
 
 async function visibleNodeIdsFromStore(store: GraphStore, scope: GraphScope | undefined): Promise<ReadonlySet<string>> {
   const memory = filterMemory(await store.getMemory(), scope);
+  return new Set(memory.nodes.map((node) => node.id));
+}
+
+async function overviewNodeIdsFromStore(store: GraphStore): Promise<ReadonlySet<string>> {
+  const memory = filterOverviewMemory(await store.getMemory());
   return new Set(memory.nodes.map((node) => node.id));
 }
 

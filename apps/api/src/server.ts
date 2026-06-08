@@ -301,13 +301,33 @@ export function createApp(): FastifyInstance {
     time: new Date().toISOString()
   }));
 
-  app.get("/workbench/agents", async (request) => ({
-    agents: agentRegistry
-      .list(getRequestScope(request))
-      .map((agent) => toWorkbenchAgent(agent, calculateCacheHitRate(cache.stats())))
-  }));
+  app.get("/workbench/agents", async (request) => {
+    const scope = getRequestScope(request);
+    const cacheHitRate = calculateCacheHitRate(cache.stats());
+    const [memory, contextPacks, handoffPacks] = await Promise.all([
+      (scope ? dataSource.getMemory(scope) : dataSource.getOverviewMemory()).catch(() => createEmptyWorkbenchMemory(dataSource.mode)),
+      (scope ? dataSource.listContextPacks(100, scope) : dataSource.listOverviewContextPacks(100)).catch(() => []),
+      (scope ? dataSource.listHandoffPacks(100, scope) : dataSource.listOverviewHandoffPacks(100)).catch(() => [])
+    ]);
+    const registryAgents = (scope ? agentRegistry.list(scope) : agentRegistry.listAll()).map((agent) =>
+      toWorkbenchAgent(agent, cacheHitRate)
+    );
+    const discoveredAgents = discoverWorkbenchAgents({
+      memory,
+      contextPacks,
+      handoffPacks,
+      cacheHitRate
+    });
 
-  app.get("/workbench/graph/subgraph", async (request) => dataSource.getMemory(getRequestScope(request)));
+    return {
+      agents: mergeWorkbenchAgents([...registryAgents, ...discoveredAgents])
+    };
+  });
+
+  app.get("/workbench/graph/subgraph", async (request) => {
+    const scope = getRequestScope(request);
+    return scope ? dataSource.getMemory(scope) : dataSource.getOverviewMemory();
+  });
 
   app.get("/model/profiles", async () => ({
     profiles: listModelProfiles(),
@@ -394,8 +414,8 @@ export function createApp(): FastifyInstance {
       .parse(request.query);
     const scope = getRequestScope(request);
     const [contextPacks, handoffPacks] = await Promise.all([
-      dataSource.listContextPacks(query.limit, scope),
-      dataSource.listHandoffPacks(query.limit, scope)
+      scope ? dataSource.listContextPacks(query.limit, scope) : dataSource.listOverviewContextPacks(query.limit),
+      scope ? dataSource.listHandoffPacks(query.limit, scope) : dataSource.listOverviewHandoffPacks(query.limit)
     ]);
 
     return {
@@ -439,11 +459,11 @@ export function createApp(): FastifyInstance {
     const scope = getRequestScope(request);
     const artifactLimit = Math.max(query.limit, 50);
     const [contextPacks, handoffPacks, spans] = await Promise.all([
-      dataSource.listContextPacks(artifactLimit, scope),
-      dataSource.listHandoffPacks(artifactLimit, scope),
+      scope ? dataSource.listContextPacks(artifactLimit, scope) : dataSource.listOverviewContextPacks(artifactLimit),
+      scope ? dataSource.listHandoffPacks(artifactLimit, scope) : dataSource.listOverviewHandoffPacks(artifactLimit),
       query.run_id ? traceStore.listSpans(query.run_id) : Promise.resolve(sampleTraceSpans)
     ]);
-    const scopedSpans = spans.filter((span) => traceSpanMatchesScope(span, scope));
+    const scopedSpans = scope ? spans.filter((span) => traceSpanMatchesScope(span, scope)) : spans;
     const relationships = createHandoffRelationships(contextPacks, handoffPacks);
 
     return {
@@ -1448,6 +1468,10 @@ function createAgentRegistryStore() {
       return [...agents.values()].filter((agent) => scopeMatchesAgent(agent, scope)).map(cloneAgent);
     },
 
+    listAll(): AgentDefinition[] {
+      return [...agents.values()].map(cloneAgent);
+    },
+
     get(id: string): AgentDefinition | undefined {
       const agent = agents.get(id);
       return agent ? cloneAgent(agent) : undefined;
@@ -1460,7 +1484,20 @@ function createAgentRegistryStore() {
   };
 }
 
-function toWorkbenchAgent(agent: AgentDefinition, cacheHitRate: number) {
+interface WorkbenchAgentSummary {
+  id: string;
+  name: string;
+  status: string;
+  task: string;
+  model: string;
+  token_budget: number;
+  permissions: string[];
+  output_contract: Record<string, unknown>;
+  cache_hit_rate: number;
+  metadata: Record<string, unknown>;
+}
+
+function toWorkbenchAgent(agent: AgentDefinition, cacheHitRate: number): WorkbenchAgentSummary {
   return {
     id: agent.id,
     name: agent.name,
@@ -1473,6 +1510,195 @@ function toWorkbenchAgent(agent: AgentDefinition, cacheHitRate: number) {
     cache_hit_rate: cacheHitRate,
     metadata: agent.metadata
   };
+}
+
+function discoverWorkbenchAgents(input: {
+  memory: GraphMemory;
+  contextPacks: readonly ContextPack[];
+  handoffPacks: readonly HandoffPack[];
+  cacheHitRate: number;
+}): WorkbenchAgentSummary[] {
+  const agents = new Map<string, WorkbenchAgentSummary>();
+
+  const upsert = (
+    id: string | undefined,
+    updates: {
+      name?: string | undefined;
+      task?: string | undefined;
+      model?: string | undefined;
+      tokenBudget?: number | undefined;
+      metadata?: Record<string, unknown> | undefined;
+    }
+  ) => {
+    const normalizedId = normalizeDiscoveredAgentId(id);
+    if (!normalizedId) {
+      return;
+    }
+
+    const existing = agents.get(normalizedId);
+    agents.set(normalizedId, {
+      id: normalizedId,
+      name: updates.name ?? existing?.name ?? formatAgentName(normalizedId),
+      status: "connected",
+      task: updates.task ?? existing?.task ?? "external graph context",
+      model: updates.model ?? existing?.model ?? "external-agent",
+      token_budget: updates.tokenBudget ?? existing?.token_budget ?? 8000,
+      permissions: existing?.permissions ?? ["read:graph", "compose:context"],
+      output_contract: existing?.output_contract ?? { format: "external", must_cite_node_ids: true },
+      cache_hit_rate: input.cacheHitRate,
+      metadata: {
+        ...(existing?.metadata ?? {}),
+        source: "discovered",
+        ...(updates.metadata ?? {})
+      }
+    });
+  };
+
+  for (const pack of input.contextPacks) {
+    upsert(pack.agent_id, {
+      task: pack.template_id?.split(":")[0] ?? "context-pack",
+      model: readMetadataText(pack.metadata, "model_profile") ?? "dynamic-profile",
+      tokenBudget: pack.token_budget,
+      metadata: {
+        discovery_source: "context_pack",
+        context_pack_id: pack.id,
+        context_pack_count: countContextPacksForAgent(input.contextPacks, pack.agent_id)
+      }
+    });
+    for (const agentId of readAgentIdsFromMetadata(pack.metadata)) {
+      upsert(agentId, {
+        task: "context-pack metadata",
+        metadata: {
+          discovery_source: "context_pack_metadata",
+          context_pack_id: pack.id
+        }
+      });
+    }
+  }
+
+  for (const pack of input.handoffPacks) {
+    for (const agentId of readAgentIdsFromMetadata(pack.metadata)) {
+      upsert(agentId, {
+        task: "handoff",
+        metadata: {
+          discovery_source: "handoff_pack",
+          handoff_pack_id: pack.id
+        }
+      });
+    }
+  }
+
+  for (const node of input.memory.nodes) {
+    const metadataAgentIds = readAgentIdsFromMetadata(node.metadata);
+    const propertyAgentIds = readAgentIdsFromMetadata(node.properties);
+    for (const agentId of [...metadataAgentIds, ...propertyAgentIds]) {
+      upsert(agentId, {
+        task: node.metadata.kind?.toString() ?? node.type.toLowerCase(),
+        model: readMetadataText(node.metadata, "model_profile") ?? "external-agent",
+        metadata: {
+          discovery_source: "graph_node",
+          node_id: node.id,
+          node_type: node.type
+        }
+      });
+    }
+  }
+
+  return [...agents.values()];
+}
+
+function createEmptyWorkbenchMemory(_mode: string): GraphMemory {
+  return {
+    nodes: [],
+    edges: []
+  };
+}
+
+function mergeWorkbenchAgents(agents: WorkbenchAgentSummary[]): WorkbenchAgentSummary[] {
+  const merged = new Map<string, WorkbenchAgentSummary>();
+  for (const agent of agents) {
+    const existing = merged.get(agent.id);
+    if (!existing) {
+      merged.set(agent.id, agent);
+      continue;
+    }
+
+    merged.set(agent.id, {
+      ...existing,
+      status: existing.status === "running" ? existing.status : agent.status,
+      metadata: {
+        ...agent.metadata,
+        ...existing.metadata
+      }
+    });
+  }
+
+  return [...merged.values()].sort((a, b) => agentSortRank(a) - agentSortRank(b) || a.name.localeCompare(b.name));
+}
+
+function agentSortRank(agent: WorkbenchAgentSummary): number {
+  if (agent.metadata.source === "default_registry") {
+    return 0;
+  }
+  if (agent.id.startsWith("dynamicchat")) {
+    return 1;
+  }
+  return 2;
+}
+
+function countContextPacksForAgent(contextPacks: readonly ContextPack[], agentId: string): number {
+  return contextPacks.filter((pack) => pack.agent_id === agentId).length;
+}
+
+function normalizeDiscoveredAgentId(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length > 120) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function formatAgentName(id: string): string {
+  return id
+    .split(/[-_:]+/u)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function readAgentIdsFromMetadata(value: unknown): string[] {
+  const record = asPlainRecord(value);
+  if (!record) {
+    return [];
+  }
+
+  const keys = ["agent_id", "agentId", "agent", "source_agent_id", "owner_agent_id", "model_agent_id"];
+  const values = keys.flatMap((key) => readStringOrStringArray(record[key]));
+  const nested = asPlainRecord(record.agent) ?? asPlainRecord(record.source_agent) ?? asPlainRecord(record.owner_agent);
+  if (nested) {
+    values.push(...keys.flatMap((key) => readStringOrStringArray(nested[key])));
+  }
+
+  return [...new Set(values.map((item) => item.trim()).filter(Boolean))];
+}
+
+function readStringOrStringArray(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string");
+  }
+  return [];
+}
+
+function readMetadataText(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
 function cloneAgent(agent: AgentDefinition): AgentDefinition {
@@ -1495,6 +1721,7 @@ function scopeMatchesAgent(agent: AgentDefinition, requestedScope: GraphScope | 
 function getRequestScope(request: FastifyRequest, bodyScope?: GraphScope | undefined): GraphScope | undefined {
   return normalizeScope({
     ...readScopeFromHeaders(request),
+    ...readScopeFromQuery(request),
     ...(bodyScope ?? readScopeFromBody(request.body))
   });
 }
@@ -1522,6 +1749,21 @@ function readScopeFromHeaders(request: FastifyRequest): GraphScope {
   return scope;
 }
 
+function readScopeFromQuery(request: FastifyRequest): GraphScope {
+  const rawQuery = request.query;
+  if (!rawQuery || typeof rawQuery !== "object" || Array.isArray(rawQuery)) {
+    return {};
+  }
+
+  const query = rawQuery as Record<string, unknown>;
+  return {
+    ...readScopeField(query, "tenant_id"),
+    ...readScopeField(query, "workspace_id"),
+    ...readScopeField(query, "project_id"),
+    ...readScopeField(query, "owner_scope")
+  };
+}
+
 function readScopeFromBody(body: unknown): GraphScope | undefined {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return undefined;
@@ -1538,6 +1780,12 @@ function readHeader(request: FastifyRequest, name: string): string | undefined {
   }
 
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readScopeField(query: Record<string, unknown>, key: keyof GraphScope): GraphScope {
+  const value = query[key];
+  const rawValue = Array.isArray(value) ? value[0] : value;
+  return typeof rawValue === "string" && rawValue.trim().length > 0 ? { [key]: rawValue.trim() } : {};
 }
 
 function applyRequestScope<T extends { scope?: GraphScope | undefined }>(body: T, scope: GraphScope | undefined): T {

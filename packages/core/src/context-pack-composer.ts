@@ -7,6 +7,7 @@ import {
   isContentModuleNode,
   listIncludedContentModules
 } from "./content-modules.js";
+import { validateContextPack } from "./context-validation.js";
 import { expandGraphNeighborhood, type GraphMemory } from "./graph-expansion.js";
 import { createId, nowIso } from "./ids.js";
 import { classifyQueryIntent } from "./intent.js";
@@ -159,6 +160,16 @@ export function composeContextPack(
     created_at: nowIso()
   };
 
+  const validation = validateContextPack(pack, neighborhood.nodes);
+  pack.metadata.validation = {
+    ok: validation.ok,
+    issue_count: validation.issues.length,
+    warning_count: validation.warnings.length,
+    stale_evidence_count: validation.stats.stale_evidence_count,
+    conflict_count: validation.stats.conflict_count,
+    ...(validation.issues.length > 0 ? { issues: validation.issues } : {})
+  };
+
   return pack;
 }
 
@@ -166,15 +177,51 @@ function hasSummary(node: GraphNode): boolean {
   return Boolean(node.summary || node.content_ref);
 }
 
+/**
+ * A temporal fact node is "stale" once it has been superseded (`valid_to` set) or
+ * archived/deprecated. The canonical current view keeps `valid_to == null`.
+ */
+export function isStaleTemporalNode(node: GraphNode): boolean {
+  return readValidTo(node) != null || isInactiveLifecycleNode(node);
+}
+
+function isInactiveLifecycleNode(node: GraphNode): boolean {
+  const status =
+    node.lifecycle_status ??
+    (typeof node.metadata.lifecycle_status === "string" ? node.metadata.lifecycle_status : "active");
+  return status === "archived" || status === "deprecated";
+}
+
+function readValidTo(node: GraphNode): string | null | undefined {
+  if (node.valid_to !== undefined) {
+    return node.valid_to;
+  }
+  const fromMetadata = node.metadata.valid_to;
+  if (fromMetadata === null) {
+    return null;
+  }
+  return typeof fromMetadata === "string" ? fromMetadata : undefined;
+}
+
+/** Down-weights superseded/inactive nodes so current state always outranks history. */
+function freshnessPenalty(node: GraphNode): number {
+  return isStaleTemporalNode(node) ? 0.35 : 0;
+}
+
 function toEvidenceItem(node: GraphNode): EvidenceItem {
   const moduleBoost = isContentModuleNode(node) ? Math.min(0.2, contentModuleSortScore(node, []) * 0.08) : 0;
   const consolidatedBoost = isConsolidatedMemoryNode(node) ? 0.12 : 0;
+  const score =
+    node.importance_score * 0.5 +
+    node.trust_score * 0.3 +
+    node.freshness_score * 0.2 +
+    moduleBoost +
+    consolidatedBoost -
+    freshnessPenalty(node);
   return {
     node_id: node.id,
     snippet: node.summary ?? node.content_ref ?? node.title,
-    score: Number(
-      Math.min(1, node.importance_score * 0.5 + node.trust_score * 0.3 + node.freshness_score * 0.2 + moduleBoost + consolidatedBoost).toFixed(4)
-    )
+    score: Number(Math.max(0, Math.min(1, score)).toFixed(4))
   };
 }
 
@@ -234,7 +281,9 @@ function compareEvidenceNodes(a: GraphNode, b: GraphNode, activationTags: readon
   const aModule = isContentModuleNode(a) ? contentModuleSortScore(a, activationTags) : a.importance_score;
   const bModule = isContentModuleNode(b) ? contentModuleSortScore(b, activationTags) : b.importance_score;
 
-  return b.importance_score + bModule + bConsolidated - (a.importance_score + aModule + aConsolidated);
+  const aRank = a.importance_score + aModule + aConsolidated - freshnessPenalty(a);
+  const bRank = b.importance_score + bModule + bConsolidated - freshnessPenalty(b);
+  return bRank - aRank;
 }
 
 function createNodeExplanations(input: {
@@ -380,6 +429,11 @@ function createCompositionMemory(input: {
     }
 
     if (isRawEventNode(node) && coveredRawEventIds.has(node.id) && !explicitSeeds.has(node.id)) {
+      excludedNodeIds.add(node.id);
+      continue;
+    }
+
+    if (!explicitSeeds.has(node.id) && isStaleTemporalNode(node)) {
       excludedNodeIds.add(node.id);
     }
   }

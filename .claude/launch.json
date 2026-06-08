@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "workbench",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@neuralmap/workbench", "exec", "vite", "--port", "3010", "--strictPort"],
+      "port": 3010
+    }
+  ]
+}

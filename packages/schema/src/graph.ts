@@ -240,6 +240,7 @@ export const graphNeuronQueryRequestSchema = z.object({
   node_types: z.array(z.enum(nodeTypes)).optional(),
   filters: metadataSchema.optional(),
   top_k: z.number().int().positive().max(100).default(10),
+  include_superseded: z.boolean().optional(),
   scope: graphScopeSchema.optional()
 });
 

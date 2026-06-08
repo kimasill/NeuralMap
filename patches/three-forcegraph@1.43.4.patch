@@ -1,0 +1,26 @@
+diff --git a/dist/three-forcegraph.js b/dist/three-forcegraph.js
+index 420855560778d37ed931fdf4e98776e751a7c556..3c95f470a6c4bb179ad6eaba3a4062175b8233a2 100644
+--- a/dist/three-forcegraph.js
++++ b/dist/three-forcegraph.js
+@@ -7533,7 +7533,7 @@ function InsertStackElement(node, body) {
+             state.engineRunning = false; // Stop ticking graph
+             state.onEngineStop();
+           } else {
+-            state.layout[isD3Sim ? 'tick' : 'step'](); // Tick it
++            if (state.layout) state.layout[isD3Sim ? 'tick' : 'step'](); // Tick it (guard: layout unset on first sync frame; see react-force-graph-3d React 19 init race)
+             state.onEngineTick();
+           }
+           var nodeThreeObjectExtendAccessor = index(state.nodeThreeObjectExtend);
+diff --git a/dist/three-forcegraph.mjs b/dist/three-forcegraph.mjs
+index 23ad46caaddca8b39dbc19366eb0182f43db62d1..2b6d6ad8ee720b1b0f0b18971fef796341e74305 100644
+--- a/dist/three-forcegraph.mjs
++++ b/dist/three-forcegraph.mjs
+@@ -730,7 +730,7 @@ var ForceGraph = Kapsule({
+           state.engineRunning = false; // Stop ticking graph
+           state.onEngineStop();
+         } else {
+-          state.layout[isD3Sim ? 'tick' : 'step'](); // Tick it
++          if (state.layout) state.layout[isD3Sim ? 'tick' : 'step'](); // Tick it (guard: layout unset on first sync frame; see react-force-graph-3d React 19 init race)
+           state.onEngineTick();
+         }
+         var nodeThreeObjectExtendAccessor = accessorFn(state.nodeThreeObjectExtend);

@@ -9,6 +9,7 @@
     "pnpm": ">=9.0.0"
   },
   "scripts": {
+    "dev": "node scripts/dev.mjs",
     "build": "tsc -b && pnpm --filter @neuralmap/workbench build:vite",
     "check": "pnpm typecheck",
     "test": "vitest run",
@@ -34,5 +35,10 @@
     "@types/node": "^22.15.3",
     "typescript": "^5.8.3",
     "vitest": "^2.1.9"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "three-forcegraph@1.43.4": "patches/three-forcegraph@1.43.4.patch"
+    }
   }
 }

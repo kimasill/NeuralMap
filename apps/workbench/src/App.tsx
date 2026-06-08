@@ -5,6 +5,9 @@ import {
   Archive,
   Brain,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronUp,
   Clock,
   Database,
   Eye,
@@ -14,18 +17,17 @@ import {
   Gauge,
   Info,
   Layers,
-  Network,
   RefreshCw,
   Search,
   Send,
   SlidersHorizontal,
   Star,
-  Trash2,
-  Zap
+  Trash2
 } from "lucide-react";
-import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
+import { type Dispatch, type FormEvent, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  applyWorkbenchScope,
   composeContextPack,
   createHandoffPack,
   fetchCacheDashboard,
@@ -40,6 +42,8 @@ import {
   refreshContextPack,
   routeModelProfile,
   sendModelFeedback,
+  type WorkbenchScopeField,
+  WORKBENCH_SCOPE,
   WORKBENCH_RUN_ID
 } from "./api.js";
 import { GraphCanvas } from "./GraphCanvas.js";
@@ -109,9 +113,27 @@ interface GraphViewState {
   };
 }
 
+type AgentConnectionMode = "direct" | "scope" | "empty";
+
+interface AgentDataView {
+  agentId: string;
+  graph: WorkbenchGraph;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  contextPacks: ContextPack[];
+  handoffPacks: HandoffPack[];
+  timelineEvents: WorkbenchTimelineEvent[];
+  nodeIds: Set<string>;
+  mode: AgentConnectionMode;
+  exactNodeCount: number;
+  typeRows: GraphGroupRow[];
+  sourceRows: GraphGroupRow[];
+}
+
 export function App() {
   const [graph, setGraph] = useState<WorkbenchGraph | null>(null);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [trace, setTrace] = useState<RunTrace | null>(null);
   const [timeline, setTimeline] = useState<WorkbenchTimeline | null>(null);
   const [artifacts, setArtifacts] = useState<WorkbenchArtifacts | null>(null);
@@ -137,14 +159,26 @@ export function App() {
   const [isInvalidatingCache, setIsInvalidatingCache] = useState(false);
   const [isRoutingProfile, setIsRoutingProfile] = useState(false);
   const [isSendingProfileFeedback, setIsSendingProfileFeedback] = useState(false);
+  const [railTab, setRailTab] = useState<RailTab>("inspector");
+  const [activityOpen, setActivityOpen] = useState(false);
 
+  const selectedAgent = useMemo(
+    () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
+    [agents, selectedAgentId]
+  );
+  const agentDataById = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, createAgentDataView(agent, graph, artifacts, timeline)])),
+    [agents, artifacts, graph, timeline]
+  );
+  const selectedAgentData = selectedAgent ? agentDataById.get(selectedAgent.id) ?? null : null;
+  const activeGraph = selectedAgentData?.graph ?? graph;
   const graphView = useMemo(
-    () => createGraphView(graph, graphFilters),
-    [graph, graphFilters]
+    () => createGraphView(activeGraph, graphFilters),
+    [activeGraph, graphFilters]
   );
   const selectedNode = useMemo(
-    () => graph?.nodes.find((node) => node.id === selectedNodeId) ?? graphView.graph.nodes[0] ?? graph?.nodes[0] ?? null,
-    [graph, graphView.graph.nodes, selectedNodeId]
+    () => activeGraph?.nodes.find((node) => node.id === selectedNodeId) ?? graphView.graph.nodes[0] ?? activeGraph?.nodes[0] ?? null,
+    [activeGraph, graphView.graph.nodes, selectedNodeId]
   );
   const nodesById = useMemo(
     () => new Map((graph?.nodes ?? []).map((node) => [node.id, node])),
@@ -187,15 +221,15 @@ export function App() {
   }, [graphView.graph.edges, queryResult]);
 
   useEffect(() => {
-    if (!graph) {
+    if (!activeGraph) {
       return;
     }
     if (selectedNodeId && graphView.nodeIds.has(selectedNodeId)) {
       return;
     }
 
-    setSelectedNodeId(graphView.graph.nodes[0]?.id ?? graph.nodes[0]?.id ?? null);
-  }, [graph, graphView.graph.nodes, graphView.nodeIds, selectedNodeId]);
+    setSelectedNodeId(graphView.graph.nodes[0]?.id ?? activeGraph.nodes[0]?.id ?? null);
+  }, [activeGraph, graphView.graph.nodes, graphView.nodeIds, selectedNodeId]);
 
   const loadWorkbench = useCallback(async () => {
     const [nextGraph, nextAgents, nextTrace, nextArtifacts, nextTimeline, nextCacheDashboard, nextProfileDashboard] = await Promise.all([
@@ -221,6 +255,12 @@ export function App() {
     void loadWorkbench();
   }, [loadWorkbench]);
 
+  useEffect(() => {
+    if (selectedAgentId && agents.length > 0 && !agents.some((agent) => agent.id === selectedAgentId)) {
+      setSelectedAgentId(null);
+    }
+  }, [agents, selectedAgentId]);
+
   const refreshTrace = useCallback(async (runId = WORKBENCH_RUN_ID) => {
     const [nextTrace, nextTimeline] = await Promise.all([fetchRunTrace(runId), fetchWorkbenchTimeline(runId)]);
     setTrace(nextTrace);
@@ -239,6 +279,22 @@ export function App() {
     setProfileDashboard(await fetchModelProfiles());
   }, []);
 
+  const handleSelectAgent = useCallback((agentId: string) => {
+    setSelectedAgentId(agentId);
+    setSelectedNodeId(null);
+    setQuery("");
+    setQueryResult(null);
+    setHandoffPack(null);
+    setGraphFilters(defaultGraphFilters);
+    setRailTab("inspector");
+  }, []);
+
+  const handleBackToRoster = useCallback(() => {
+    setSelectedAgentId(null);
+    setQueryResult(null);
+    setHandoffPack(null);
+  }, []);
+
   const handleRouteProfile = useCallback(
     async (pack: ContextPack | null = contextPack) => {
       setIsRoutingProfile(true);
@@ -251,7 +307,7 @@ export function App() {
           task: query.trim() || objective,
           query: query.trim() || undefined,
           context_pack_id: pack?.id,
-          token_budget: pack?.token_budget ?? agents[0]?.token_budget
+          token_budget: pack?.token_budget ?? selectedAgent?.token_budget ?? agents[0]?.token_budget
         });
         setProfileDecision(decision);
       } catch (error) {
@@ -260,7 +316,7 @@ export function App() {
         setIsRoutingProfile(false);
       }
     },
-    [agents, contextPack, objective, query]
+    [agents, contextPack, objective, query, selectedAgent]
   );
 
   const handleSendProfileFeedback = useCallback(
@@ -334,10 +390,10 @@ export function App() {
     try {
       const input: ComposeContextInput = {
         objective,
-        agent_id: agents[0]?.id ?? "main-agent",
+        agent_id: selectedAgent?.id ?? agents[0]?.id ?? "main-agent",
         session_id: workbenchSessionId,
         task_type: "implementation",
-        token_budget: agents[0]?.token_budget ?? 8000,
+        token_budget: selectedAgent?.token_budget ?? agents[0]?.token_budget ?? 8000,
         seed_node_ids: seedNodeIds
       };
       if (activeQuery) {
@@ -353,7 +409,7 @@ export function App() {
     } finally {
       setIsComposing(false);
     }
-  }, [agents, handleRouteProfile, objective, query, queryResult, refreshArtifacts, refreshCacheDashboard, refreshTrace, selectedNode?.id, selectedNode?.title]);
+  }, [agents, handleRouteProfile, objective, query, queryResult, refreshArtifacts, refreshCacheDashboard, refreshTrace, selectedAgent, selectedNode?.id, selectedNode?.title]);
 
   const handleCreateHandoff = useCallback(async () => {
     if (!contextPack) {
@@ -483,142 +539,454 @@ export function App() {
   );
 
   return (
-    <main className="app-shell">
-      <aside className="agent-panel" aria-label="Agent panel">
-        <div className="panel-title">
-          <Network size={18} />
-          <span>Agents</span>
-        </div>
-        <div className="agent-list">
-          {agents.map((agent) => (
-            <AgentRow key={agent.id} agent={agent} />
-          ))}
-        </div>
-        <CachePanel
-          dashboard={cacheDashboard}
-          layerFilter={cacheLayerFilter}
-          tagFilter={cacheTagFilter}
-          message={cacheMessage}
-          isInvalidating={isInvalidatingCache}
-          onLayerFilterChange={setCacheLayerFilter}
-          onTagFilterChange={setCacheTagFilter}
-          onRefresh={refreshCacheDashboard}
-          onInvalidate={handleInvalidateCache}
-        />
-      </aside>
-
-      <section className="graph-stage" aria-label="Graph canvas">
-        <div className="stage-toolbar">
-          <div className="search-box">
-            <Search size={16} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  void handleRunQuery();
-                }
-              }}
-              placeholder="Search nodes"
-              aria-label="Search nodes"
-            />
-          </div>
-          <button className="toolbar-button" type="button" onClick={() => void handleRunQuery()} disabled={isQuerying}>
-            <Search size={17} />
-            <span>{isQuerying ? "Querying" : "Query"}</span>
-          </button>
-          <span className={`data-mode ${graph?.mode === "database" ? "live" : "sample"}`}>
-            {graph?.mode === "database" ? "Database" : "Sample"}
-          </span>
-          <button className="icon-button" type="button" onClick={() => void loadWorkbench()} aria-label="Refresh graph">
-            <RefreshCw size={17} />
-          </button>
-        </div>
-
-        {filteredNodes.length > 0 ? (
-          <div className="search-results">
-            {filteredNodes.map((node) => (
-              <button key={node.id} type="button" onClick={() => handleSelectNode(node.id)}>
-                {node.title}
+    <div className="app">
+      <header className="topbar">
+        <div className="topbar__left">
+          {selectedAgent ? (
+            <>
+              <button className="topbar__back" type="button" onClick={handleBackToRoster}>
+                <ChevronLeft size={16} />
+                <span>Agents</span>
               </button>
-            ))}
-          </div>
-        ) : null}
-
-        {graph ? (
-          <GraphScaleControls
-            filters={graphFilters}
-            availableTypes={graphView.availableTypes}
-            availableSources={graphView.availableSources}
-            groupRows={graphView.groupRows}
-            stats={graphView.stats}
-            onChange={setGraphFilters}
-          />
-        ) : null}
-
-        {graph ? (
-          <GraphCanvas
-            graph={graphView.graph}
-            selectedNodeId={selectedNode?.id ?? null}
-            focusedNodeIds={focusedNodeIds}
-            focusedEdgeIds={focusedEdgeIds}
-            onSelectNode={handleSelectNode}
-          />
-        ) : (
-          <div className="loading-state">Loading graph</div>
-        )}
-      </section>
-
-      <aside className="inspector-panel" aria-label="Context inspector">
-        <NodeInspector node={selectedNode} explanation={selectedNodeExplanation} nodesById={nodesById} />
-        <ContextWorkbench
-          objective={objective}
-          onObjectiveChange={setObjective}
-          queryResult={queryResult}
-          contextPack={contextPack}
-          handoffPack={handoffPack}
-          artifacts={artifacts}
-          profileDashboard={profileDashboard}
-          profileDecision={profileDecision}
-          profileMessage={profileMessage}
-          nodesById={nodesById}
-          operationError={operationError}
-          isComposing={isComposing}
-          isRefreshingContext={isRefreshingContext}
-          isCreatingHandoff={isCreatingHandoff}
-          isRoutingProfile={isRoutingProfile}
-          isSendingProfileFeedback={isSendingProfileFeedback}
-          onComposeContext={handleComposeContext}
-          onRefreshContext={handleRefreshContext}
-          onCreateHandoff={handleCreateHandoff}
-          onRouteProfile={() => void handleRouteProfile()}
-          onSendProfileFeedback={handleSendProfileFeedback}
-          onSelectNode={handleSelectNode}
-          onSelectContextPack={handleSelectContextPack}
-          onSelectHandoffPack={handleSelectHandoffPack}
-        />
-      </aside>
-
-      <section className="trace-panel" aria-label="Run timeline">
-        <div className="runtime-panel-grid">
-          <TimelinePanel timeline={timeline} onSelectEvent={handleSelectTimelineEvent} />
-          <RunTracePanel trace={trace} />
+              <span className="topbar__crumb">
+                <span className="topbar__crumb-sep">/</span>
+                <span className="topbar__crumb-name">{selectedAgent.name}</span>
+              </span>
+            </>
+          ) : (
+            <span className="topbar__brand">
+              <span className="brand-mark">
+                <Brain size={15} />
+              </span>
+              <span>NeuralMap</span>
+            </span>
+          )}
         </div>
-      </section>
-    </main>
+        <div className="topbar__right">
+          <span className={`chip ${graph?.mode === "database" ? "chip--live" : "chip--sample"}`}>
+            <Database size={13} />
+            <span>{graph?.mode === "database" ? "Database" : "Sample"}</span>
+          </span>
+          <span className="chip">
+            <Layers size={13} />
+            <span>{WORKBENCH_SCOPE.routeLabel}</span>
+          </span>
+          <button className="icon-button" type="button" onClick={() => void loadWorkbench()} aria-label="Refresh data">
+            <RefreshCw size={16} />
+          </button>
+        </div>
+      </header>
+
+      {selectedAgent ? (
+        <div className="brain">
+          <AgentBrainHeader agent={selectedAgent} data={selectedAgentData} />
+
+          <div className="brain__body">
+            <section className="brain__stage" aria-label="Agent brain">
+              <div className="stage__toolbar">
+                <div className="search">
+                  <Search size={15} />
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        void handleRunQuery();
+                      }
+                    }}
+                    placeholder="Search neurons"
+                    aria-label="Search neurons"
+                  />
+                </div>
+                <button className="btn btn--primary" type="button" onClick={() => void handleRunQuery()} disabled={isQuerying}>
+                  <Search size={15} />
+                  <span>{isQuerying ? "Querying" : "Query"}</span>
+                </button>
+              </div>
+
+              <div className="graph-canvas-shell">
+                {filteredNodes.length > 0 ? (
+                  <div className="search-results">
+                    {filteredNodes.map((node) => (
+                      <button key={node.id} type="button" onClick={() => handleSelectNode(node.id)}>
+                        {node.title}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                {activeGraph ? (
+                  <>
+                    <GraphCanvas
+                      graph={graphView.graph}
+                      selectedNodeId={selectedNode?.id ?? null}
+                      focusedNodeIds={focusedNodeIds}
+                      focusedEdgeIds={focusedEdgeIds}
+                      onSelectNode={handleSelectNode}
+                    />
+                    <GraphScaleControls
+                      filters={graphFilters}
+                      availableTypes={graphView.availableTypes}
+                      availableSources={graphView.availableSources}
+                      groupRows={graphView.groupRows}
+                      stats={graphView.stats}
+                      onChange={setGraphFilters}
+                    />
+                  </>
+                ) : (
+                  <div className="loading-state">Loading graph</div>
+                )}
+              </div>
+            </section>
+
+            <aside className="brain__rail" aria-label="Inspector">
+              <div className="rail__tabs">
+                {railTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    className={`rail__tab ${railTab === tab.id ? "active" : ""}`}
+                    onClick={() => setRailTab(tab.id)}
+                  >
+                    <tab.icon size={15} />
+                    <span>{tab.label}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="rail__panel">
+                {railTab === "inspector" ? (
+                  <NodeInspector node={selectedNode} explanation={selectedNodeExplanation} nodesById={nodesById} />
+                ) : null}
+                {railTab === "context" ? (
+                  <ContextWorkbench
+                    objective={objective}
+                    onObjectiveChange={setObjective}
+                    queryResult={queryResult}
+                    contextPack={contextPack}
+                    handoffPack={handoffPack}
+                    artifacts={artifacts}
+                    profileDashboard={profileDashboard}
+                    profileDecision={profileDecision}
+                    profileMessage={profileMessage}
+                    nodesById={nodesById}
+                    operationError={operationError}
+                    isComposing={isComposing}
+                    isRefreshingContext={isRefreshingContext}
+                    isCreatingHandoff={isCreatingHandoff}
+                    isRoutingProfile={isRoutingProfile}
+                    isSendingProfileFeedback={isSendingProfileFeedback}
+                    onComposeContext={handleComposeContext}
+                    onRefreshContext={handleRefreshContext}
+                    onCreateHandoff={handleCreateHandoff}
+                    onRouteProfile={() => void handleRouteProfile()}
+                    onSendProfileFeedback={handleSendProfileFeedback}
+                    onSelectNode={handleSelectNode}
+                    onSelectContextPack={handleSelectContextPack}
+                    onSelectHandoffPack={handleSelectHandoffPack}
+                  />
+                ) : null}
+                {railTab === "agent" ? (
+                  <AgentConnectionPanel agent={selectedAgent} data={selectedAgentData} />
+                ) : null}
+              </div>
+            </aside>
+          </div>
+
+          <section className="activity" aria-label="Activity">
+            <div className="activity__bar">
+              <button
+                type="button"
+                className={`activity__toggle ${activityOpen ? "active" : ""}`}
+                onClick={() => setActivityOpen((open) => !open)}
+              >
+                <Activity size={14} />
+                <span>Activity</span>
+                {activityOpen ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+              </button>
+              <span className="activity__spacer" />
+              <span className="data-mode">{timeline?.events.length ?? 0} events</span>
+            </div>
+            {activityOpen ? (
+              <div className="activity__panels">
+                <TimelinePanel timeline={timeline} onSelectEvent={handleSelectTimelineEvent} />
+                <RunTracePanel trace={trace} />
+                <CachePanel
+                  dashboard={cacheDashboard}
+                  layerFilter={cacheLayerFilter}
+                  tagFilter={cacheTagFilter}
+                  message={cacheMessage}
+                  isInvalidating={isInvalidatingCache}
+                  onLayerFilterChange={setCacheLayerFilter}
+                  onTagFilterChange={setCacheTagFilter}
+                  onRefresh={refreshCacheDashboard}
+                  onInvalidate={handleInvalidateCache}
+                />
+              </div>
+            ) : null}
+          </section>
+        </div>
+      ) : (
+        <main className="roster" aria-label="Agent roster">
+          <div className="roster__inner">
+            <header className="roster__head">
+              <div>
+                <span className="eyebrow">NeuralMap Workbench</span>
+                <h1>Agents</h1>
+                <p className="roster__subtitle">
+                  Each agent keeps its memory in the graph backbone. Open one to inspect its brain — neurons and synapses.
+                </p>
+              </div>
+              <div className="roster__stats">
+                <dl className="stat-tile">
+                  <dt>Agents</dt>
+                  <dd>{agents.length}</dd>
+                </dl>
+                <dl className="stat-tile">
+                  <dt>Neurons</dt>
+                  <dd>{graph?.nodes.length ?? 0}</dd>
+                </dl>
+                <dl className="stat-tile">
+                  <dt>Synapses</dt>
+                  <dd>{graph?.edges.length ?? 0}</dd>
+                </dl>
+              </div>
+            </header>
+
+            <ScopeSwitcher />
+
+            <div className="roster__grid">
+              {agents.map((agent) => (
+                <AgentTile
+                  key={agent.id}
+                  agent={agent}
+                  data={agentDataById.get(agent.id) ?? null}
+                  onOpen={handleSelectAgent}
+                />
+              ))}
+              {agents.length === 0 ? <div className="roster__empty">Loading agents…</div> : null}
+            </div>
+          </div>
+        </main>
+      )}
+    </div>
   );
 }
 
-function AgentRow({ agent }: { agent: AgentSummary }) {
+type RailTab = "inspector" | "context" | "agent";
+
+const railTabs: Array<{ id: RailTab; label: string; icon: typeof Database }> = [
+  { id: "inspector", label: "Inspector", icon: Database },
+  { id: "context", label: "Context", icon: FileText },
+  { id: "agent", label: "Agent", icon: Brain }
+];
+
+const nodeTypeColors: Record<string, string> = {
+  Agent: "#7b87ff",
+  Session: "#56b6e6",
+  Run: "#3fb950",
+  Task: "#e3a13b",
+  Decision: "#e8743b",
+  Summary: "#a98bf0",
+  Template: "#e173b8",
+  Repository: "#2bb6a6",
+  CodeFile: "#84b94a",
+  CodeSymbol: "#a7d05a",
+  Document: "#d9b53f",
+  DocSection: "#e6cd5a",
+  Ticket: "#ef6a7e",
+  PR: "#b98cf0",
+  Commit: "#8088ee",
+  TestCase: "#45c08a",
+  Error: "#f0664f",
+  Person: "#ef83b6",
+  Policy: "#e0c24a",
+  Artifact: "#8a9099"
+};
+
+function AgentTile({
+  agent,
+  data,
+  onOpen
+}: {
+  agent: AgentSummary;
+  data: AgentDataView | null;
+  onOpen: (agentId: string) => void;
+}) {
+  const nodeCount = data?.nodes.length ?? 0;
+  const edgeCount = data?.edges.length ?? 0;
+  const contextCount = data?.contextPacks.length ?? 0;
+  const modeLabel = data?.mode === "direct" ? "Linked" : data?.mode === "scope" ? "Scoped" : "Empty";
+  const modeClass = data?.mode === "direct" ? "linked" : data?.mode === "scope" ? "scoped" : "";
+  const typeRows = data?.typeRows ?? [];
+
   return (
-    <article className="agent-row">
-      <div className="agent-status">
-        <Zap size={15} />
-        <span>{agent.status}</span>
+    <button type="button" className="agent-tile" onClick={() => onOpen(agent.id)}>
+      <div className="agent-tile__top">
+        <span className="agent-tile__status">
+          <span className={`status-dot ${agent.status.toLowerCase()}`} />
+          <span>{agent.status}</span>
+        </span>
+        <span className={`mode-chip ${modeClass}`}>{modeLabel}</span>
       </div>
-      <h2>{agent.name}</h2>
-      <p>{agent.task}</p>
-      <dl>
+      <div className="agent-tile__name">{agent.name}</div>
+      <div className="agent-tile__task">{agent.task}</div>
+      <TypeBar rows={typeRows} total={nodeCount} />
+      <div className="agent-tile__foot">
+        <div className="agent-tile__metric">
+          <span>Model</span>
+          <strong>{agent.model}</strong>
+        </div>
+        <div className="agent-tile__metric">
+          <span>Neurons</span>
+          <strong>{nodeCount}</strong>
+        </div>
+        <div className="agent-tile__metric">
+          <span>Synapses</span>
+          <strong>{edgeCount}</strong>
+        </div>
+        <div className="agent-tile__metric">
+          <span>Packs</span>
+          <strong>{contextCount}</strong>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function TypeBar({ rows, total }: { rows: GraphGroupRow[]; total: number }) {
+  if (total === 0 || rows.length === 0) {
+    return <div className="typebar" />;
+  }
+
+  return (
+    <div className="typebar" aria-hidden>
+      {rows.map((row) => (
+        <span
+          key={row.id}
+          title={`${row.label} · ${row.nodeCount}`}
+          style={{ width: `${(row.nodeCount / total) * 100}%`, background: nodeTypeColors[row.label] ?? "#8a9099" }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function AgentBrainHeader({ agent, data }: { agent: AgentSummary; data: AgentDataView | null }) {
+  const nodeCount = data?.nodes.length ?? 0;
+  const edgeCount = data?.edges.length ?? 0;
+  const modeLabel = data?.mode === "direct" ? "Linked" : data?.mode === "scope" ? "Scoped" : "Empty";
+  const modeClass = data?.mode === "direct" ? "linked" : data?.mode === "scope" ? "scoped" : "";
+
+  return (
+    <header className="brain__header">
+      <div className="brain__id">
+        <div className="brain__id-row">
+          <span className={`status-dot ${agent.status.toLowerCase()}`} />
+          <h1>{agent.name}</h1>
+          <span className={`mode-chip ${modeClass}`}>{modeLabel}</span>
+        </div>
+        <p>{agent.task}</p>
+      </div>
+      <div className="metric-chips">
+        <div className="metric-chip">
+          <span>Model</span>
+          <strong>{agent.model}</strong>
+        </div>
+        <div className="metric-chip">
+          <span>Budget</span>
+          <strong>{agent.token_budget.toLocaleString()}</strong>
+        </div>
+        <div className="metric-chip">
+          <span>Cache</span>
+          <strong>{Math.round(agent.cache_hit_rate * 100)}%</strong>
+        </div>
+        <div className="metric-chip">
+          <span>Neurons</span>
+          <strong>{nodeCount}</strong>
+        </div>
+        <div className="metric-chip">
+          <span>Synapses</span>
+          <strong>{edgeCount}</strong>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+const scopeInputs: Array<{ key: WorkbenchScopeField; label: string }> = [
+  { key: "tenant_id", label: "Tenant" },
+  { key: "workspace_id", label: "Workspace" },
+  { key: "project_id", label: "Project" },
+  { key: "owner_scope", label: "Owner" }
+];
+
+function ScopeSwitcher() {
+  const [fields, setFields] = useState<Record<WorkbenchScopeField, string>>(WORKBENCH_SCOPE.fields);
+  const isDirty = scopeInputs.some(({ key }) => fields[key] !== WORKBENCH_SCOPE.fields[key]);
+
+  const updateField = useCallback((key: WorkbenchScopeField, value: string) => {
+    setFields((current) => ({
+      ...current,
+      [key]: value
+    }));
+  }, []);
+
+  const handleSubmit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      applyWorkbenchScope(fields);
+    },
+    [fields]
+  );
+
+  const handleClear = useCallback(() => {
+    applyWorkbenchScope({
+      tenant_id: "",
+      workspace_id: "",
+      project_id: "",
+      owner_scope: ""
+    });
+  }, []);
+
+  return (
+    <form className="scopebar" onSubmit={handleSubmit}>
+      <div className="route-badge">
+        <Database size={14} />
+        <span>Route</span>
+        <strong>{WORKBENCH_SCOPE.routeLabel}</strong>
+      </div>
+      {scopeInputs.map(({ key, label }) => (
+        <label key={key} className="scope-field">
+          <span>{label}</span>
+          <input
+            value={fields[key]}
+            onChange={(event) => updateField(key, event.target.value)}
+            aria-label={label}
+            spellCheck={false}
+          />
+        </label>
+      ))}
+      <button className="icon-button scope-action" type="submit" aria-label="Apply scope" disabled={!isDirty}>
+        <CheckCircle2 size={16} />
+      </button>
+      <button className="icon-button scope-action" type="button" onClick={handleClear} aria-label="Clear scope">
+        <Trash2 size={16} />
+      </button>
+    </form>
+  );
+}
+
+function AgentConnectionPanel({ agent, data }: { agent: AgentSummary; data: AgentDataView | null }) {
+  const typeRows = data?.typeRows ?? [];
+  const sourceRows = data?.sourceRows ?? [];
+
+  return (
+    <section className="agent-connection-panel">
+      <div className="panel-title">
+        <Brain size={18} />
+        <span>{agent.name}</span>
+      </div>
+      <dl className="compact-metrics">
         <div>
           <dt>Model</dt>
           <dd>{agent.model}</dd>
@@ -632,7 +1000,26 @@ function AgentRow({ agent }: { agent: AgentSummary }) {
           <dd>{Math.round(agent.cache_hit_rate * 100)}%</dd>
         </div>
       </dl>
-    </article>
+      <div className="connection-lists">
+        <DataRows title="Types" rows={typeRows} />
+        <DataRows title="Sources" rows={sourceRows} />
+      </div>
+    </section>
+  );
+}
+
+function DataRows({ title, rows }: { title: string; rows: GraphGroupRow[] }) {
+  return (
+    <div className="connection-list">
+      <span>{title}</span>
+      {rows.slice(0, 4).map((row) => (
+        <div key={row.id}>
+          <strong>{row.label}</strong>
+          <small>{row.nodeCount}</small>
+        </div>
+      ))}
+      {rows.length === 0 ? <small>None</small> : null}
+    </div>
   );
 }
 
@@ -1712,6 +2099,133 @@ function formatMetricLabel(key: string): string {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function createAgentDataView(
+  agent: AgentSummary,
+  graph: WorkbenchGraph | null,
+  artifacts: WorkbenchArtifacts | null,
+  timeline: WorkbenchTimeline | null
+): AgentDataView {
+  const emptyGraph: WorkbenchGraph = {
+    nodes: [],
+    edges: [],
+    generated_at: graph?.generated_at ?? new Date(0).toISOString(),
+    ...(graph?.mode ? { mode: graph.mode } : {})
+  };
+
+  if (!graph) {
+    return {
+      agentId: agent.id,
+      graph: emptyGraph,
+      nodes: [],
+      edges: [],
+      contextPacks: [],
+      handoffPacks: [],
+      timelineEvents: [],
+      nodeIds: new Set(),
+      mode: "empty",
+      exactNodeCount: 0,
+      typeRows: [],
+      sourceRows: []
+    };
+  }
+
+  const contextPacks = (artifacts?.context_packs ?? []).filter((pack) => pack.agent_id === agent.id);
+  const contextPackIds = new Set(contextPacks.map((pack) => pack.id));
+  const handoffPacks = (artifacts?.handoff_packs ?? []).filter((pack) => {
+    const sourceContextPackId = getHandoffSourceContextPackId(pack);
+    return Boolean(sourceContextPackId && contextPackIds.has(sourceContextPackId)) || metadataReferencesAgent(pack.metadata, agent.id);
+  });
+  const timelineEvents = (timeline?.events ?? []).filter(
+    (event) =>
+      Boolean(event.context_pack_id && contextPackIds.has(event.context_pack_id)) ||
+      event.run_id === agent.id ||
+      event.run_id?.includes(agent.id) ||
+      metadataReferencesAgent(event.metrics, agent.id)
+  );
+
+  const exactNodeIds = new Set<string>();
+  for (const node of graph.nodes) {
+    if (nodeReferencesAgent(node, agent)) {
+      exactNodeIds.add(node.id);
+    }
+  }
+  for (const pack of contextPacks) {
+    for (const nodeId of pack.node_ids) {
+      exactNodeIds.add(nodeId);
+    }
+  }
+  for (const pack of handoffPacks) {
+    for (const nodeId of pack.referenced_node_ids) {
+      exactNodeIds.add(nodeId);
+    }
+  }
+
+  const canReadGraph = agent.permissions?.includes("read:graph") ?? true;
+  const mode: AgentConnectionMode = exactNodeIds.size > 0 ? "direct" : canReadGraph && graph.nodes.length > 0 ? "scope" : "empty";
+  const nodes =
+    mode === "direct"
+      ? graph.nodes.filter((node) => exactNodeIds.has(node.id))
+      : mode === "scope"
+        ? [...graph.nodes]
+        : [];
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = graph.edges.filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to));
+  const scopedGraph: WorkbenchGraph = {
+    ...graph,
+    nodes,
+    edges
+  };
+
+  return {
+    agentId: agent.id,
+    graph: scopedGraph,
+    nodes,
+    edges,
+    contextPacks,
+    handoffPacks,
+    timelineEvents,
+    nodeIds,
+    mode,
+    exactNodeCount: exactNodeIds.size,
+    typeRows: createGraphGroupRows(nodes, edges, "type"),
+    sourceRows: createGraphGroupRows(nodes, edges, "source")
+  };
+}
+
+function nodeReferencesAgent(node: GraphNode, agent: AgentSummary): boolean {
+  return (
+    node.id === agent.id ||
+    node.id.endsWith(`:${agent.id}`) ||
+    node.title === agent.name ||
+    (node.type === "Agent" && node.title.toLowerCase().includes(agent.name.toLowerCase())) ||
+    metadataReferencesAgent(node.metadata, agent.id) ||
+    metadataReferencesAgent(node.properties, agent.id)
+  );
+}
+
+function metadataReferencesAgent(value: unknown, agentId: string, depth = 0): boolean {
+  if (depth > 3 || value === null || value === undefined) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    return value === agentId || value.includes(agentId);
+  }
+  if (typeof value !== "object") {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => metadataReferencesAgent(item, agentId, depth + 1));
+  }
+
+  return Object.entries(value).some(([key, item]) => {
+    if (key.toLowerCase().includes("agent") && metadataReferencesAgent(item, agentId, depth + 1)) {
+      return true;
+    }
+    return metadataReferencesAgent(item, agentId, depth + 1);
+  });
 }
 
 function createGraphView(graph: WorkbenchGraph | null, filters: GraphViewFilters): GraphViewState {
