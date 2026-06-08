@@ -33,6 +33,7 @@ import {
   fetchCacheDashboard,
   fetchAgents,
   fetchRunTrace,
+  fetchHealth,
   fetchModelProfiles,
   fetchWorkbenchArtifacts,
   fetchWorkbenchGraph,
@@ -42,6 +43,7 @@ import {
   refreshContextPack,
   routeModelProfile,
   sendModelFeedback,
+  type ApiHealth,
   type WorkbenchScopeField,
   WORKBENCH_SCOPE,
   WORKBENCH_RUN_ID
@@ -132,6 +134,7 @@ interface AgentDataView {
 
 export function App() {
   const [graph, setGraph] = useState<WorkbenchGraph | null>(null);
+  const [health, setHealth] = useState<ApiHealth | null>(null);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [trace, setTrace] = useState<RunTrace | null>(null);
@@ -232,16 +235,18 @@ export function App() {
   }, [activeGraph, graphView.graph.nodes, graphView.nodeIds, selectedNodeId]);
 
   const loadWorkbench = useCallback(async () => {
-    const [nextGraph, nextAgents, nextTrace, nextArtifacts, nextTimeline, nextCacheDashboard, nextProfileDashboard] = await Promise.all([
+    const [nextGraph, nextAgents, nextTrace, nextArtifacts, nextTimeline, nextCacheDashboard, nextProfileDashboard, nextHealth] = await Promise.all([
       fetchWorkbenchGraph(),
       fetchAgents(),
       fetchRunTrace(WORKBENCH_RUN_ID),
       fetchWorkbenchArtifacts(),
       fetchWorkbenchTimeline(WORKBENCH_RUN_ID),
       fetchCacheDashboard(),
-      fetchModelProfiles()
+      fetchModelProfiles(),
+      fetchHealth()
     ]);
     setGraph(nextGraph);
+    setHealth(nextHealth);
     setAgents(nextAgents);
     setTrace(nextTrace);
     setArtifacts(nextArtifacts);
@@ -563,7 +568,16 @@ export function App() {
           )}
         </div>
         <div className="topbar__right">
-          <span className={`chip ${graph?.mode === "database" ? "chip--live" : "chip--sample"}`}>
+          <span
+            className={`chip ${graph?.mode === "database" ? "chip--live" : "chip--sample"}`}
+            title={
+              graph?.mode === "database"
+                ? "Reading persisted graph memory from Postgres"
+                : health?.db_reason
+                  ? `Sample fallback — ${health.db_reason}`
+                  : "Using in-memory sample memory (no database configured or reachable)"
+            }
+          >
             <Database size={13} />
             <span>{graph?.mode === "database" ? "Database" : "Sample"}</span>
           </span>

@@ -39,6 +39,18 @@ export interface WorkbenchScope {
   fields: Record<WorkbenchScopeField, string>;
 }
 
+export interface ApiHealth {
+  graph_mode: "database" | "sample";
+  db_ok: boolean;
+  db_reason: string | null;
+  db_last_error: string | null;
+  db_last_error_at: string | null;
+}
+
+export async function fetchHealth(): Promise<ApiHealth | null> {
+  return fetchJson<ApiHealth | null>("/health", null);
+}
+
 export async function fetchWorkbenchGraph(): Promise<WorkbenchGraph> {
   return fetchJson<WorkbenchGraph>("/workbench/graph/subgraph", fallbackGraph);
 }

@@ -30,7 +30,9 @@ describe("api server", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({
         ok: true,
-        graph_mode: "sample"
+        graph_mode: "sample",
+        db_ok: false,
+        db_reason: "DATABASE_URL is not configured."
       });
     } finally {
       await app.close();

@@ -17,3 +17,6 @@ pnpm-debug.log*
 drizzle/meta/_journal.json
 .cursor/
 *.code-workspace
+test-results/
+playwright-report/
+.playwright/

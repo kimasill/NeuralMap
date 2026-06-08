@@ -8,7 +8,8 @@
     "build:vite": "vite build",
     "dev": "vite",
     "preview": "vite preview --host 0.0.0.0",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@neuralmap/schema": "workspace:*",
@@ -20,6 +21,7 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@types/three": "^0.184.1",

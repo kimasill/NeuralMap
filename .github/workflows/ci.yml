@@ -42,3 +42,81 @@ jobs:
       - name: Repository ingest dry-run
         run: pnpm db:seed:repo:dry
 
+  database:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: neuralmap
+          POSTGRES_PASSWORD: neuralmap
+          POSTGRES_DB: neuralmap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U neuralmap"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://neuralmap:neuralmap@localhost:5432/neuralmap
+      NEURALMAP_DATABASE_HOST_SOURCE: static
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Run migrations
+        run: pnpm db:migrate
+
+      - name: DB-backed smoke (required)
+        run: pnpm db:smoke:required
+
+      - name: Repository ingest into database
+        run: pnpm db:seed:repo
+
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace contracts
+        run: pnpm --filter @neuralmap/schema build
+
+      - name: Install Playwright browser
+        run: pnpm --filter @neuralmap/workbench exec playwright install --with-deps chromium
+
+      - name: Workbench e2e smoke (3D graph render guard)
+        run: pnpm --filter @neuralmap/workbench test:e2e

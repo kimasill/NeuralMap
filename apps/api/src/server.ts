@@ -1,3 +1,10 @@
+// NOTE: server.ts is being decomposed away from a single-file monolith.
+// Cross-cutting request plumbing (scope resolution, auth, rate limiting) now
+// lives in ./request-context.ts. The next steps are to lift the cohesive helper
+// clusters below createApp() (workbench agent discovery, model routing, profile
+// feedback) into ./lib modules, then split createApp's route handlers into
+// register<Group>Routes(app, deps) functions (graph / context / model / cache /
+// workbench / ingest), keeping createApp as the composition root.
 import cors from "@fastify/cors";
 import {
   cacheLayerNames,
@@ -65,7 +72,6 @@ import {
   graphNodeSchema,
   graphQueryRequestSchema,
   graphTraverseRequestSchema,
-  normalizeScope,
   runStatuses,
   scopeMatches,
   type ContextPack,
@@ -82,6 +88,12 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { createGraphDataSource } from "./data-source.js";
+import {
+  applyRequestScope,
+  authorizeRequest,
+  createScopeRateLimiter,
+  getRequestScope
+} from "./request-context.js";
 import { registerTraceHooks } from "./trace.js";
 
 const handoffRequestSchema = z.object({
@@ -265,7 +277,7 @@ export function createApp(): FastifyInstance {
     logger: process.env.NODE_ENV === "test" ? false : { level: process.env.LOG_LEVEL ?? "info" }
   });
 
-  const dataSource = createGraphDataSource();
+  const dataSource = createGraphDataSource(app.log);
   const cache = createInMemoryCache();
   const traceStore = createApiTraceStore();
   const profileFeedback = createProfileFeedbackStore();
@@ -294,12 +306,20 @@ export function createApp(): FastifyInstance {
 
   registerTraceHooks(app, traceStore);
 
-  app.get("/health", async () => ({
-    ok: true,
-    service: "neuralmap-api",
-    graph_mode: dataSource.mode,
-    time: new Date().toISOString()
-  }));
+  app.get("/health", async () => {
+    const db = dataSource.getDbStatus();
+    return {
+      ok: true,
+      service: "neuralmap-api",
+      graph_mode: dataSource.mode,
+      db_ok: db.db_ok,
+      db_reason: db.reason,
+      db_last_error: db.last_error,
+      db_last_error_at: db.last_error_at,
+      db_error_count: db.error_count,
+      time: new Date().toISOString()
+    };
+  });
 
   app.get("/workbench/agents", async (request) => {
     const scope = getRequestScope(request);
@@ -1716,133 +1736,6 @@ function scopeMatchesAgent(agent: AgentDefinition, requestedScope: GraphScope | 
   }
 
   return scopeMatches(agent.scope, requestedScope);
-}
-
-function getRequestScope(request: FastifyRequest, bodyScope?: GraphScope | undefined): GraphScope | undefined {
-  return normalizeScope({
-    ...readScopeFromHeaders(request),
-    ...readScopeFromQuery(request),
-    ...(bodyScope ?? readScopeFromBody(request.body))
-  });
-}
-
-function readScopeFromHeaders(request: FastifyRequest): GraphScope {
-  const scope: GraphScope = {};
-  const tenantId = readHeader(request, "x-neuralmap-tenant-id");
-  const workspaceId = readHeader(request, "x-neuralmap-workspace-id");
-  const projectId = readHeader(request, "x-neuralmap-project-id");
-  const ownerScope = readHeader(request, "x-neuralmap-owner-scope");
-
-  if (tenantId) {
-    scope.tenant_id = tenantId;
-  }
-  if (workspaceId) {
-    scope.workspace_id = workspaceId;
-  }
-  if (projectId) {
-    scope.project_id = projectId;
-  }
-  if (ownerScope) {
-    scope.owner_scope = ownerScope;
-  }
-
-  return scope;
-}
-
-function readScopeFromQuery(request: FastifyRequest): GraphScope {
-  const rawQuery = request.query;
-  if (!rawQuery || typeof rawQuery !== "object" || Array.isArray(rawQuery)) {
-    return {};
-  }
-
-  const query = rawQuery as Record<string, unknown>;
-  return {
-    ...readScopeField(query, "tenant_id"),
-    ...readScopeField(query, "workspace_id"),
-    ...readScopeField(query, "project_id"),
-    ...readScopeField(query, "owner_scope")
-  };
-}
-
-function readScopeFromBody(body: unknown): GraphScope | undefined {
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return undefined;
-  }
-
-  const parsed = graphScopeSchema.safeParse((body as Record<string, unknown>).scope);
-  return parsed.success ? parsed.data : undefined;
-}
-
-function readHeader(request: FastifyRequest, name: string): string | undefined {
-  const value = request.headers[name];
-  if (Array.isArray(value)) {
-    return value[0];
-  }
-
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function readScopeField(query: Record<string, unknown>, key: keyof GraphScope): GraphScope {
-  const value = query[key];
-  const rawValue = Array.isArray(value) ? value[0] : value;
-  return typeof rawValue === "string" && rawValue.trim().length > 0 ? { [key]: rawValue.trim() } : {};
-}
-
-function applyRequestScope<T extends { scope?: GraphScope | undefined }>(body: T, scope: GraphScope | undefined): T {
-  if (!scope) {
-    return body;
-  }
-
-  return {
-    ...body,
-    scope
-  };
-}
-
-function authorizeRequest(request: FastifyRequest): { ok: true } | { ok: false } {
-  const configuredKeys = (process.env.NEURALMAP_API_KEYS ?? "")
-    .split(",")
-    .map((key) => key.trim())
-    .filter(Boolean);
-
-  if (configuredKeys.length === 0) {
-    return { ok: true };
-  }
-
-  const providedKey = readHeader(request, "x-neuralmap-api-key") ?? readBearerToken(request);
-  return configuredKeys.includes(providedKey ?? "") ? { ok: true } : { ok: false };
-}
-
-function readBearerToken(request: FastifyRequest): string | undefined {
-  const authorization = readHeader(request, "authorization");
-  const match = authorization?.match(/^Bearer\s+(.+)$/iu);
-  return match?.[1];
-}
-
-function createScopeRateLimiter() {
-  const limit = Number(process.env.NEURALMAP_RATE_LIMIT_PER_MINUTE ?? 0);
-  const buckets = new Map<string, { count: number; resetAt: number }>();
-
-  return {
-    consume(scope: GraphScope | undefined, route: string): { ok: true } | { ok: false; reset_at: string } {
-      if (!Number.isFinite(limit) || limit <= 0) {
-        return { ok: true };
-      }
-
-      const now = Date.now();
-      const key = createCacheKey({ route: route.split("?")[0], scope: scope ?? "global" });
-      const existing = buckets.get(key);
-      const bucket = existing && existing.resetAt > now ? existing : { count: 0, resetAt: now + 60_000 };
-      bucket.count += 1;
-      buckets.set(key, bucket);
-
-      if (bucket.count > limit) {
-        return { ok: false, reset_at: new Date(bucket.resetAt).toISOString() };
-      }
-
-      return { ok: true };
-    }
-  };
 }
 
 function traceSpanMatchesScope(span: TraceSpan, scope: GraphScope | undefined): boolean {

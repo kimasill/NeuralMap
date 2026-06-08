@@ -24,8 +24,31 @@ import { attachScopeToMetadata, getScopeFromMetadata, scopeMatches } from "@neur
 
 export type DataMode = "database" | "sample";
 
+/** Minimal pino-compatible sink so the data source can report DB failures. */
+export interface DataSourceLogger {
+  warn: (obj: Record<string, unknown>, msg?: string) => void;
+  error: (obj: Record<string, unknown>, msg?: string) => void;
+}
+
+export interface DbStatus {
+  mode: DataMode;
+  /** Whether the most recent DB-backed operation succeeded. Always false in sample mode. */
+  db_ok: boolean;
+  /** Why the source is degraded/sample (missing URL, client error, last query failure). */
+  reason: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
+  error_count: number;
+}
+
+const consoleLogger: DataSourceLogger = {
+  warn: (obj, msg) => console.warn(JSON.stringify({ level: "warn", msg, ...obj })),
+  error: (obj, msg) => console.error(JSON.stringify({ level: "error", msg, ...obj }))
+};
+
 export interface GraphDataSource {
   mode: DataMode;
+  getDbStatus(): DbStatus;
   getMemory(scope?: GraphScope): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; generated_at: string; mode: DataMode }>;
   getOverviewMemory(): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; generated_at: string; mode: DataMode }>;
   getNode(id: string, scope?: GraphScope): Promise<GraphNode | undefined>;
@@ -52,32 +75,44 @@ export interface GraphDataSource {
   redactGraph(input: RedactGraphInput): Promise<{ nodes: number; edges: number; chunks: number; mode: DataMode }>;
 }
 
-export function createGraphDataSource(): GraphDataSource {
-  const defaultDataSource = createSingleGraphDataSource(process.env.DATABASE_URL, "DATABASE_URL is not configured.");
+export function createGraphDataSource(logger: DataSourceLogger = consoleLogger): GraphDataSource {
+  const defaultDataSource = createSingleGraphDataSource(process.env.DATABASE_URL, "DATABASE_URL is not configured.", logger);
   const databaseRoutes = parseDatabaseRoutes(process.env.NEURALMAP_DATABASE_ROUTES);
   if (databaseRoutes.size === 0) {
     return defaultDataSource;
   }
 
-  return createRoutedDataSource(defaultDataSource, databaseRoutes);
+  return createRoutedDataSource(defaultDataSource, databaseRoutes, logger);
 }
 
-function createSingleGraphDataSource(connectionString: string | undefined, missingReason: string): GraphDataSource {
+function createSingleGraphDataSource(
+  connectionString: string | undefined,
+  missingReason: string,
+  logger: DataSourceLogger
+): GraphDataSource {
   if (!connectionString) {
+    logger.warn({ reason: missingReason }, "neuralmap data source running in sample mode");
     return createSampleDataSource(missingReason);
   }
 
   try {
     const { db } = createDbClient(connectionString);
-    return createDatabaseDataSource(createGraphStore(db));
-  } catch {
-    return createSampleDataSource("Database client could not be created.");
+    return createDatabaseDataSource(createGraphStore(db), logger);
+  } catch (err) {
+    const reason = `Database client could not be created: ${errorMessage(err)}`;
+    logger.error({ reason }, "neuralmap data source falling back to sample mode");
+    return createSampleDataSource(reason);
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function createRoutedDataSource(
   fallback: GraphDataSource,
-  routes: ReadonlyMap<string, string>
+  routes: ReadonlyMap<string, string>,
+  logger: DataSourceLogger
 ): GraphDataSource {
   const dataSourcesByUrl = new Map<string, GraphDataSource>();
   const sourceForScope = (scope: GraphScope | undefined): GraphDataSource => {
@@ -91,7 +126,7 @@ function createRoutedDataSource(
       return cached;
     }
 
-    const next = createSingleGraphDataSource(url, "Routed DATABASE_URL is not configured.");
+    const next = createSingleGraphDataSource(url, "Routed DATABASE_URL is not configured.", logger);
     dataSourcesByUrl.set(url, next);
     return next;
   };
@@ -99,12 +134,26 @@ function createRoutedDataSource(
   return {
     mode: fallback.mode === "database" || routes.size > 0 ? "database" : fallback.mode,
 
+    getDbStatus() {
+      const sources = uniqueRoutedSources(fallback, routes, dataSourcesByUrl, logger).map((source) => source.getDbStatus());
+      const errored = sources.find((status) => !status.db_ok && status.last_error);
+      const degraded = errored ?? sources.find((status) => !status.db_ok);
+      return {
+        mode: "database",
+        db_ok: sources.every((status) => status.db_ok),
+        reason: degraded?.reason ?? null,
+        last_error: errored?.last_error ?? null,
+        last_error_at: errored?.last_error_at ?? null,
+        error_count: sources.reduce((sum, status) => sum + status.error_count, 0)
+      };
+    },
+
     getMemory(scope) {
       return sourceForScope(scope).getMemory(scope);
     },
 
     async getOverviewMemory() {
-      const memories = await Promise.all(uniqueRoutedSources(fallback, routes, dataSourcesByUrl).map((source) => source.getOverviewMemory()));
+      const memories = await Promise.all(uniqueRoutedSources(fallback, routes, dataSourcesByUrl, logger).map((source) => source.getOverviewMemory()));
       return {
         ...mergeMemories(memories),
         generated_at: new Date().toISOString(),
@@ -146,7 +195,7 @@ function createRoutedDataSource(
 
     async listOverviewContextPacks(limit) {
       const packs = await Promise.all(
-        uniqueRoutedSources(fallback, routes, dataSourcesByUrl).map((source) => source.listOverviewContextPacks(limit))
+        uniqueRoutedSources(fallback, routes, dataSourcesByUrl, logger).map((source) => source.listOverviewContextPacks(limit))
       );
       return sortByCreatedAtDesc(uniqueById(packs.flat())).slice(0, limit ?? 10);
     },
@@ -165,7 +214,7 @@ function createRoutedDataSource(
 
     async listOverviewHandoffPacks(limit) {
       const packs = await Promise.all(
-        uniqueRoutedSources(fallback, routes, dataSourcesByUrl).map((source) => source.listOverviewHandoffPacks(limit))
+        uniqueRoutedSources(fallback, routes, dataSourcesByUrl, logger).map((source) => source.listOverviewHandoffPacks(limit))
       );
       return sortByCreatedAtDesc(uniqueById(packs.flat())).slice(0, limit ?? 10);
     },
@@ -236,7 +285,8 @@ function databaseRouteKeys(scope: GraphScope | undefined): string[] {
 function uniqueRoutedSources(
   fallback: GraphDataSource,
   routes: ReadonlyMap<string, string>,
-  cachedSources: Map<string, GraphDataSource>
+  cachedSources: Map<string, GraphDataSource>,
+  logger: DataSourceLogger
 ): GraphDataSource[] {
   const sources = new Map<string, GraphDataSource>([["fallback", fallback]]);
   for (const url of new Set(routes.values())) {
@@ -246,28 +296,56 @@ function uniqueRoutedSources(
       continue;
     }
 
-    const source = createSingleGraphDataSource(url, "Routed DATABASE_URL is not configured.");
+    const source = createSingleGraphDataSource(url, "Routed DATABASE_URL is not configured.", logger);
     cachedSources.set(url, source);
     sources.set(url, source);
   }
   return [...sources.values()];
 }
 
-function createDatabaseDataSource(store: GraphStore): GraphDataSource {
+function createDatabaseDataSource(store: GraphStore, logger: DataSourceLogger = consoleLogger): GraphDataSource {
   const sample = createSampleDataSource("Database unavailable.");
+  const status: Omit<DbStatus, "mode"> = {
+    db_ok: true,
+    reason: null,
+    last_error: null,
+    last_error_at: null,
+    error_count: 0
+  };
+  // Surfacing fallbacks (instead of the previous silent `catch {}`) is what lets
+  // /health explain *why* the workbench shows Sample when the DB drops.
+  const fail = (op: string, err: unknown): void => {
+    const message = errorMessage(err);
+    status.db_ok = false;
+    status.reason = `DB operation '${op}' failed: ${message}`;
+    status.last_error = message;
+    status.last_error_at = new Date().toISOString();
+    status.error_count += 1;
+    logger.error({ op, err: message }, "neuralmap DB operation failed; serving sample fallback");
+  };
+  const ok = (): void => {
+    status.db_ok = true;
+    status.reason = null;
+  };
 
   return {
     mode: "database",
 
+    getDbStatus() {
+      return { mode: "database", ...status };
+    },
+
     async getMemory(scope) {
       try {
         const memory = await store.getMemory();
+        ok();
         return {
           ...filterMemory(memory, scope),
           generated_at: new Date().toISOString(),
           mode: "database"
         };
-      } catch {
+      } catch (err) {
+        fail("getMemory", err);
         return sample.getMemory(scope);
       }
     },
@@ -275,12 +353,14 @@ function createDatabaseDataSource(store: GraphStore): GraphDataSource {
     async getOverviewMemory() {
       try {
         const memory = await store.getMemory();
+        ok();
         return {
           ...filterOverviewMemory(memory),
           generated_at: new Date().toISOString(),
           mode: "database"
         };
-      } catch {
+      } catch (err) {
+        fail("getOverviewMemory", err);
         return sample.getOverviewMemory();
       }
     },
@@ -288,16 +368,21 @@ function createDatabaseDataSource(store: GraphStore): GraphDataSource {
     async getNode(id, scope) {
       try {
         const node = (await store.getNode(id)) ?? (await sample.getNode(id, scope));
+        ok();
         return node && isVisibleNode(node, scope) ? node : undefined;
-      } catch {
+      } catch (err) {
+        fail("getNode", err);
         return sample.getNode(id, scope);
       }
     },
 
     async searchVectorSeeds(request, limit) {
       try {
-        return await store.searchVectorSeeds(request, limit);
-      } catch {
+        const seeds = await store.searchVectorSeeds(request, limit);
+        ok();
+        return seeds;
+      } catch (err) {
+        fail("searchVectorSeeds", err);
         return [];
       }
     },
@@ -496,6 +581,10 @@ function createSampleDataSource(reason: string): GraphDataSource {
 
   return {
     mode: "sample",
+
+    getDbStatus() {
+      return { mode: "sample", db_ok: false, reason, last_error: null, last_error_at: null, error_count: 0 };
+    },
 
     async getMemory(scope) {
       return {

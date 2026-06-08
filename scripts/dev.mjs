@@ -86,6 +86,49 @@ const workbench = startProcess(
 
 process.stdout.write(`\n${YELLOW}Press Ctrl+C to stop all services.${RESET}\n\n`);
 
+// ── 4. Database health gate ─────────────────────────────────────────────────
+// The API silently falls back to in-memory sample memory when Postgres is
+// unreachable (a common Windows/WSL pitfall: the WSL VM idles out and drops the
+// container). Poll /health once the API is up and say plainly which mode it is
+// in, so "the Workbench only shows samples" never goes unexplained again.
+const API_PORT = process.env.PORT ?? "4317";
+const HEALTH_URL = `http://localhost:${API_PORT}/health`;
+
+async function reportDatabaseHealth() {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await delay(1000);
+    let health;
+    try {
+      const response = await fetch(HEALTH_URL);
+      if (!response.ok) continue;
+      health = await response.json();
+    } catch {
+      continue; // API not listening yet
+    }
+
+    if (health.graph_mode === "database" && health.db_ok) {
+      process.stdout.write(`\n${BOLD}${CYAN}✓ API connected to the database. Workbench will show real graph memory.${RESET}\n\n`);
+    } else {
+      const reason = health.db_reason || "no DATABASE_URL configured or the database is unreachable";
+      process.stdout.write(
+        `\n${BOLD}${YELLOW}⚠ API is serving SAMPLE memory (graph_mode=${health.graph_mode}).${RESET}\n` +
+        `${YELLOW}  Reason: ${reason}${RESET}\n` +
+        `${YELLOW}  The Workbench will only show sample neurons until the database is reachable.${RESET}\n` +
+        `${YELLOW}  Windows/WSL: ensure 'pnpm infra:up' succeeded and the WSL Docker postgres container is still running.${RESET}\n` +
+        `${YELLOW}  See docs/how-to/local-database-ingest.md for the keep-alive watch loop.${RESET}\n\n`
+      );
+    }
+    return;
+  }
+  process.stdout.write(`\n${YELLOW}⚠ Could not reach ${HEALTH_URL} to confirm database health.${RESET}\n\n`);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+void reportDatabaseHealth();
+
 function shutdown() {
   api.kill();
   workbench.kill();
